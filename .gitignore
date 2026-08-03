@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+.env.*
