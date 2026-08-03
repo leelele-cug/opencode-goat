@@ -1,0 +1,62 @@
+{
+  "name": "opencode-goat",
+  "version": "0.1.0-alpha.1",
+  "description": "Goal operationalization, alignment, and testing for OpenCode",
+  "type": "module",
+  "license": "MIT",
+  "author": "leelele-cug",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leelele-cug/opencode-goat.git"
+  },
+  "homepage": "https://github.com/leelele-cug/opencode-goat#readme",
+  "bugs": {
+    "url": "https://github.com/leelele-cug/opencode-goat/issues"
+  },
+  "keywords": ["opencode", "workflow", "verification", "git", "sqlite"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "opencode": "1.18.11",
+    "bun": ">=1.3.14"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md"
+  ],
+  "exports": {
+    "./server": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "bun scripts/clean.ts",
+    "build": "bun run clean && bunx tsc -p tsconfig.build.json",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test",
+    "coverage": "bun test --coverage",
+    "coverage:check": "bun scripts/coverage-check.ts",
+    "smoke:opencode": "bun run build && bun scripts/smoke-opencode.ts",
+    "prepack": "bun run build",
+    "pack:smoke": "bun run build && bun scripts/package-smoke.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.11",
+    "@opencode-ai/sdk": "1.18.11",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2"
+  },
+  "packageManager": "bun@1.3.14"
+}
