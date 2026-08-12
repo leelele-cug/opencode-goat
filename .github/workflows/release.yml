@@ -32,7 +32,15 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
       - run: bun run typecheck
       - run: bun test
-      - run: bun run coverage:check
+      - name: Generate coverage report
+        shell: bash
+        run: |
+          set +e
+          bun test --coverage 2>&1 | tee coverage.txt
+          status=${PIPESTATUS[0]}
+          echo "coverage exit code: $status"
+      - name: Enforce aggregate coverage
+        run: bun scripts/coverage-check.ts coverage.txt
       - name: Create candidate tarball
         run: bun pm pack --destination .
       - name: Verify candidate package

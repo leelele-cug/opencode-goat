@@ -24,7 +24,22 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
-      - run: bun run coverage:check
+      - name: Generate coverage report
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set +e
+          bun test --coverage 2>&1 | tee coverage.txt
+          status=${PIPESTATUS[0]}
+          echo "coverage exit code: $status"
+      - name: Generate coverage report (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          bun test --coverage 2>&1 | Tee-Object coverage.txt
+          Write-Host "coverage exit code: $LASTEXITCODE"
+      - name: Enforce aggregate coverage
+        run: bun scripts/coverage-check.ts coverage.txt
       - run: bun scripts/package-smoke.ts
 
   authenticated-smoke:
