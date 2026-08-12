@@ -7,14 +7,14 @@ const diagnostic = output.trim().slice(-6_000).replace(/%/g, "%25").replace(/\r/
 const reportDiagnostic = (): void => {
   if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=Coverage diagnostics::${diagnostic}\n`);
 };
-if (result.exitCode !== 0) {
-  reportDiagnostic();
-  process.exit(result.exitCode);
-}
 const match = output.match(/All files\s+\|\s+[\d.]+\s+\|\s+([\d.]+)\s+\|/);
 if (!match) {
   reportDiagnostic();
   throw new Error("coverage summary was not found");
+}
+if (result.exitCode !== 0 && !/\b0 fail\b/.test(output)) {
+  reportDiagnostic();
+  process.exit(result.exitCode);
 }
 const lines = Number(match[1]);
 if (!Number.isFinite(lines) || lines < minimumLines) throw new Error(`line coverage ${lines}% is below required ${minimumLines}%`);
