@@ -37,8 +37,8 @@ function deny(...pairs: readonly [permission: string, pattern: string][]): reado
 }
 
 const formulatorGeneric: ReadonlySet<string> = new Set([...READ_TOOLS, "question"]);
-const executorGeneric: ReadonlySet<string> = new Set([...READ_TOOLS, ...WRITE_TOOLS]);
-const verifierGeneric: ReadonlySet<string> = new Set(READ_TOOLS);
+const executorGeneric: ReadonlySet<string> = new Set([...READ_TOOLS, ...WRITE_TOOLS, "bash"]);
+const verifierGeneric: ReadonlySet<string> = new Set([...READ_TOOLS, "bash"]);
 
 export const ROLE_CAPABILITIES: Readonly<Record<GoatRole, RoleCapability>> = {
   formulator: {
@@ -71,7 +71,7 @@ export const ROLE_CAPABILITIES: Readonly<Record<GoatRole, RoleCapability>> = {
     writeTools: new Set(),
     goatTools: new Set<RegisteredGoatToolId>(["goat_state", "goat_verifier_report"]),
     deniedTools: new Set<string>([...WRITE_TOOLS, "question", ...UNREACHABLE_TOOLS]),
-    sessionDeny: deny(["edit", "*"], ["write", "*"], ["bash", "*"], ["apply_patch", "*"], ["task", "*"], ["question", "*"]),
+    sessionDeny: deny(["edit", "*"], ["write", "*"], ["apply_patch", "*"], ["task", "*"], ["question", "*"]),
     canUseNativeQuestion: false,
   },
 };

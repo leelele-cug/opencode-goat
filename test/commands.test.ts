@@ -7,6 +7,7 @@ import { REGISTERED_GOAT_TOOL_IDS, ROLE_CAPABILITIES } from "../src/core/role-ca
 test("Goat distinguishes concise and detailed status commands", () => {
   expect(parseGoatCommand(" ")).toEqual({ type: "status", detailed: false });
   expect(parseGoatCommand("status")).toEqual({ type: "status", detailed: true });
+  expect(parseGoatCommand("doctor")).toEqual({ type: "doctor" });
   expect(parseGoatCommand("revise")).toEqual({ type: "unknown", raw: "revise" });
   expect(parseGoatCommand("revise make it faster")).toEqual({ type: "revise", change: "make it faster" });
 });
@@ -45,4 +46,5 @@ test("role capabilities expose no overrideable permission surface", () => {
   expect(ROLE_CAPABILITIES.verifier.writeTools.size).toBe(0);
   expect(ROLE_CAPABILITIES.executor.deniedTools.has("question")).toBe(true);
   expect(ROLE_CAPABILITIES.formulator.deniedTools.has("bash")).toBe(true);
+  expect(ROLE_CAPABILITIES.executor.genericTools.has("bash")).toBe(true);
 });

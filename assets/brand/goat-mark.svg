@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Goat evidence loop mark</title>
+  <desc id="desc">A G-shaped authority loop with an evidence check returning through it.</desc>
+  <rect width="64" height="64" rx="16" fill="#172329"/>
+  <path d="M48 20c-4-5-10-8-17-8-11 0-19 8-19 20s8 20 19 20c7 0 13-3 17-8V32H35" fill="none" stroke="#f4efe4" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M22 34l7 7 16-18" fill="none" stroke="#b7ef4a" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12" cy="32" r="3" fill="#67d6ce"/>
+  <circle cx="52" cy="24" r="3" fill="#ffb45b"/>
+</svg>

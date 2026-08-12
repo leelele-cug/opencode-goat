@@ -6,7 +6,11 @@ import { initializeSchema } from "../src/store/schema.js";
 import { Store } from "../src/store/store.js";
 import { buildSnapshot, type WorkspaceSnapshot } from "../src/core/workspace.js";
 
-const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
+const projectDirectory = process.platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+const worktreeDirectory = process.platform === "win32" ? "C:\\Project\\goat-worktree" : "/tmp/goat-project/goat-worktree";
+const persistedProjectDirectory = process.platform === "win32" ? projectDirectory.toLowerCase() : projectDirectory;
+const persistedWorktreeDirectory = process.platform === "win32" ? worktreeDirectory.toLowerCase() : worktreeDirectory;
+const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function snapshot(commit = "a".repeat(40)): WorkspaceSnapshot {
@@ -27,7 +31,7 @@ function identity(overrides: Partial<SessionIdentity> = {}): SessionIdentity {
     projectID: "project-1",
     workspaceID: null,
     parentID: null,
-    directory: "c:\\project",
+    directory: projectDirectory,
     agent: "goat-formulator",
     model,
     metadata: null,
@@ -41,8 +45,7 @@ function createFakes(overrides: Partial<Fakes> = {}): Fakes {
   const workspace: WorkspacePort = {
     probeGit: async () => ({ isGit: true, isClean: true }),
     listWorktrees: async () => [],
-    createWorktree: async () => ({ path: "C:\\Project\\worktree", waitUntilReady: async () => undefined }),
-    removeWorktree: async () => undefined,
+    createWorktree: async () => ({ path: worktreeDirectory, waitUntilReady: async () => undefined }),
     captureSnapshot: async () => ({ ok: true, snapshot: snapshot() }),
     ...(overrides.workspace ?? {}),
   };
@@ -66,7 +69,7 @@ function createRuntime(overrides: Partial<Fakes> = {}) {
   let sequence = 0;
   const store = new Store(db, { now: () => new Date() }, { next: () => `id-${++sequence}` }, "instance-1");
   const fakes = createFakes(overrides);
-  const orchestrator = new Orchestrator(store, fakes.session, fakes.workspace, fakes.question, origin, { show: async (toast) => { fakes.toasts.push(toast); } } satisfies ToastPort);
+  const orchestrator = new Orchestrator(store, fakes.session, fakes.workspace, fakes.question, origin.projectId, { show: async (toast) => { fakes.toasts.push(toast); } } satisfies ToastPort);
   return { db, store, orchestrator, ...fakes };
 }
 
@@ -76,7 +79,7 @@ const proposeArgs = {
   excluded: [],
   constraints: [],
   assumptions: [],
-  criteria: [{ id: "c", priority: "must" as const, description: "works", verificationMethod: "inspect" }],
+  criteria: [{ id: "c", priority: "must" as const, description: "works", verification: [{ kind: "inspection" as const, description: "inspect" }] }],
   outcomeObservable: true,
   constraintsReviewed: true,
   assumptionsReviewed: true,
@@ -86,11 +89,11 @@ const proposeArgs = {
 };
 
 async function createGoalWithApproval(runtime: ReturnType<typeof createRuntime>, workspace: "current" | "worktree" = "current"): Promise<string> {
-  const created = await runtime.orchestrator.createGoal({ sourceRequest: "runtime test", rootSessionId: "root-session", model });
+  const created = await runtime.orchestrator.createGoal({ sourceRequest: "runtime test", rootSessionId: "root-session", origin, model });
   if (!created.ok) throw new Error(created.error);
   const goalId = created.goalId;
   await runtime.orchestrator.proposeContract(
-    { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: "C:\\Project", worktree: "C:\\Project" },
+    { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
     { ...proposeArgs, workspace },
     "proposal-op",
   );
@@ -182,7 +185,7 @@ test("guardGenericToolCall enforces the fixed role matrix for bound sessions", a
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "read", "call-x")).toEqual({ allowed: true });
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "edit", "call-y")).toMatchObject({ allowed: false });
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "task", "call-z")).toMatchObject({ allowed: false });
-    expect(await runtime.orchestrator.guardGenericToolCall("unrelated-session", "bash", "call-w")).toEqual({ allowed: true });
+     expect(await runtime.orchestrator.guardGenericToolCall("unrelated-session", "bash", "call-w")).toEqual({ allowed: false, error: "unbound-goat-agent" });
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "goat_state", "call-v")).toEqual({ allowed: true });
   } finally { runtime.db.close(); }
 });
@@ -193,7 +196,7 @@ test("worktree activation creates and dispatches only after readiness", async ()
     workspace: {
       ...createFakes().workspace,
       captureSnapshot: async () => { order.push("baseline"); return { ok: true, snapshot: snapshot() }; },
-      createWorktree: async () => ({ path: "C:\\Project\\goat-worktree", waitUntilReady: async () => { order.push("ready"); } }),
+       createWorktree: async () => ({ path: worktreeDirectory, waitUntilReady: async () => { order.push("ready"); } }),
       listWorktrees: async () => [],
     },
     session: {
@@ -207,7 +210,19 @@ test("worktree activation creates and dispatches only after readiness", async ()
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
     expect(order).toEqual(["baseline", "ready", "baseline", "prompt"]);
     expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
-    expect(runtime.store.getRun(goalId)?.workspacePath?.toLowerCase()).toBe("c:\\project\\goat-worktree");
+    expect(runtime.store.getRun(goalId)?.workspacePath).toBe(persistedWorktreeDirectory);
+  } finally { runtime.db.close(); }
+});
+
+test("an idle Executor cannot leave an active Run waiting forever", async () => {
+  const runtime = createRuntime();
+  try {
+    const goalId = await createGoalWithApproval(runtime);
+    await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
+    const run = runtime.store.getRun(goalId)!;
+    await runtime.orchestrator.handleSessionIdle(run.executorSessionId!);
+    expect(runtime.store.getGoal(goalId)).toMatchObject({ state: "BLOCKED", blockerCode: "executor-session-ended" });
+    expect(runtime.store.getRun(goalId)?.status).toBe("BLOCKED");
   } finally { runtime.db.close(); }
 });
 
@@ -242,7 +257,7 @@ test("recovery completes a PREPARING Run that has no workspace path", async () =
     expect(runtime.store.getRun(goalId)?.status).toBe("PREPARING");
     await runtime.orchestrator.recoverProject();
     expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
-    expect(runtime.store.getRun(goalId)?.workspacePath).toBe("c:\\project");
+    expect(runtime.store.getRun(goalId)?.workspacePath).toBe(persistedProjectDirectory);
   } finally { runtime.db.close(); }
 });
 
@@ -267,7 +282,7 @@ test("recovery binds a missing Verifier Session before delivery", async () => {
     const run = runtime.store.getRun(goalId)!;
     const evidence = runtime.store.recordEvidence(goalId, runtime.store.getOwnedFencingToken(goalId)!, run.runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: run.executorSessionId! }, "recovery-verifier-evidence");
     expect(evidence.ok).toBe(true);
-    const proposed = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: run.executorSessionId!, messageID: "m", agent: "goat-executor", directory: "C:\\Project", worktree: "C:\\Project" }, "recovery-verifier-completion");
+    const proposed = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: run.executorSessionId!, messageID: "m", agent: "goat-executor", directory: projectDirectory, worktree: projectDirectory }, "recovery-verifier-completion");
     expect(proposed).toContain("verification-started");
     expect(runtime.store.getRun(goalId)?.status).toBe("VERIFYING");
     await runtime.orchestrator.recoverProject();
@@ -289,16 +304,14 @@ test("a stale executor Session cannot control the Goal after revision", async ()
   } finally { runtime.db.close(); }
 });
 
-test("cancellation removes a clean abandoned worktree after the terminal transition", async () => {
+test("cancellation preserves a clean abandoned worktree for explicit cleanup", async () => {
   let created = false;
-  let removed = false;
   let worktreeName = "";
   const runtime = createRuntime({
     workspace: {
       ...createFakes().workspace,
-      createWorktree: async (_directory, name) => { created = true; worktreeName = name; return { path: "C:\\Project\\goat-worktree", waitUntilReady: async () => undefined }; },
-      listWorktrees: async () => created ? [{ name: worktreeName, path: "C:\\Project\\goat-worktree" }] : [],
-      removeWorktree: async () => { removed = true; },
+       createWorktree: async (_directory, name) => { created = true; worktreeName = name; return { path: worktreeDirectory, waitUntilReady: async () => undefined }; },
+       listWorktrees: async () => created ? [{ name: worktreeName, path: worktreeDirectory }] : [],
     },
     session: {
       ...createFakes().session,
@@ -309,11 +322,10 @@ test("cancellation removes a clean abandoned worktree after the terminal transit
     const goalId = await createGoalWithApproval(runtime, "worktree");
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
     expect(await runtime.orchestrator.cancel(goalId)).toEqual({ ok: true });
-    expect(removed).toBe(true);
   } finally { runtime.db.close(); }
 });
 
-test("prompted events advance matching dispatches", async () => {
+test("message updates advance matching dispatches", async () => {
   const runtime = createRuntime({
     session: {
       ...createFakes().session,
@@ -324,7 +336,7 @@ test("prompted events advance matching dispatches", async () => {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
     const dispatch = runtime.store.listPendingDispatches(goalId).find((item) => item.role === "executor")!;
-    await runtime.orchestrator.handlePrompted("executor-child", dispatch.messageId);
+    await runtime.orchestrator.handleMessageUpdated("executor-child", { id: dispatch.messageId, role: "user" });
     expect(runtime.store.getDispatch(dispatch.dispatchId)?.status).toBe("STARTED");
   } finally { runtime.db.close(); }
 });

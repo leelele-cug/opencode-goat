@@ -22,7 +22,7 @@ export const NON_TERMINAL_STATES: ReadonlySet<GoalState> = new Set([
   "BLOCKED",
 ]);
 
-export const DEFAULT_MAX_VERIFICATION_ATTEMPTS = 7;
+export const DEFAULT_MAX_VERIFICATION_ATTEMPTS = 10;
 
 export function isTerminal(state: GoalState): boolean {
   return TERMINAL_STATES.has(state);
@@ -54,6 +54,7 @@ export function assertTransition(from: GoalState, to: GoalState): void {
 export const RunStatusSchema = z.enum([
   "PREPARING",
   "ACTIVE",
+  "FINALIZING",
   "VERIFYING",
   "PAUSED",
   "BLOCKED",
@@ -62,12 +63,13 @@ export const RunStatusSchema = z.enum([
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
-export const ACTIVE_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(["PREPARING", "ACTIVE", "VERIFYING", "PAUSED", "BLOCKED"]);
+export const ACTIVE_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(["PREPARING", "ACTIVE", "FINALIZING", "VERIFYING", "PAUSED", "BLOCKED"]);
 export const RUN_TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["COMPLETED", "CANCELLED"]);
 
 const LEGAL_RUN_TRANSITIONS: ReadonlyMap<RunStatus, ReadonlySet<RunStatus>> = new Map([
   ["PREPARING", new Set(["ACTIVE", "BLOCKED", "CANCELLED"])],
-  ["ACTIVE", new Set(["VERIFYING", "PAUSED", "BLOCKED", "CANCELLED"])],
+  ["ACTIVE", new Set(["FINALIZING", "PAUSED", "BLOCKED", "CANCELLED"])],
+  ["FINALIZING", new Set(["VERIFYING", "BLOCKED", "CANCELLED"])],
   ["VERIFYING", new Set(["COMPLETED", "ACTIVE", "BLOCKED", "CANCELLED"])],
   ["PAUSED", new Set(["ACTIVE", "BLOCKED", "CANCELLED"])],
   ["BLOCKED", new Set(["ACTIVE", "CANCELLED"])],

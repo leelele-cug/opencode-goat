@@ -6,7 +6,7 @@ import { openDatabase } from "../src/store/database.js";
 import { initializeSchema } from "../src/store/schema.js";
 import { Store } from "../src/store/store.js";
 
-const origin = { projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
+const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function identity(overrides: Partial<SessionIdentity> = {}): SessionIdentity {
@@ -32,12 +32,11 @@ function createRuntime() {
     probeGit: async () => ({ isGit: true, isClean: true }),
     listWorktrees: async () => [],
     createWorktree: async () => ({ path: "C:\\Project\\wt", waitUntilReady: async () => undefined }),
-    removeWorktree: async () => undefined,
     captureSnapshot: async () => ({ ok: true, snapshot: buildSnapshotStub() }),
   };
   const question: QuestionPort = { list: async () => [], reject: async () => undefined };
   const scope = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
-  const orchestrator = new Orchestrator(store, session, workspace, question, scope, undefined, "linux");
+  const orchestrator = new Orchestrator(store, session, workspace, question, scope.projectId, undefined, "linux");
   const registry = { ids: async () => ["goat_state", "goat_contract_propose", "goat_evidence_record", "goat_completion_propose", "goat_block", "goat_verifier_report"] };
   let configRegistered = 0;
   const hooks = createHooks(orchestrator, session, registry, origin, () => { configRegistered += 1; });
@@ -77,12 +76,12 @@ test("the before-hook binds the exact approval Question and denies mismatches", 
   const runtime = createRuntime();
   try {
     await runtime.hooks.config?.({} as never);
-    const created = await runtime.orchestrator.createGoal({ sourceRequest: "hooks test", rootSessionId: "root-session", model });
+    const created = await runtime.orchestrator.createGoal({ sourceRequest: "hooks test", rootSessionId: "root-session", origin, model });
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
       { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: "C:\\Project", worktree: "C:\\Project" },
-      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verificationMethod: "inspect" }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
+      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks",
     );
     const live = runtime.store.getLiveApproval(goalId)!;
@@ -97,12 +96,12 @@ test("the after-hook resolves approval and activates the Goal", async () => {
   const runtime = createRuntime();
   try {
     await runtime.hooks.config?.({} as never);
-    const created = await runtime.orchestrator.createGoal({ sourceRequest: "hooks test", rootSessionId: "root-session", model });
+    const created = await runtime.orchestrator.createGoal({ sourceRequest: "hooks test", rootSessionId: "root-session", origin, model });
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
       { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: "C:\\Project", worktree: "C:\\Project" },
-      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verificationMethod: "inspect" }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
+      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks-2",
     );
     const live = runtime.store.getLiveApproval(goalId)!;
@@ -112,11 +111,11 @@ test("the after-hook resolves approval and activates the Goal", async () => {
   } finally { runtime.db.close(); }
 });
 
-test("generic tools remain available while Goat tools require a bound Session", async () => {
+test("unbound reserved agents cannot use generic tools", async () => {
   const runtime = createRuntime();
   try {
-    await runtime.hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "unrelated-session", callID: "call-1" }, { args: {} } as never);
-    await runtime.hooks["tool.execute.before"]?.({ tool: "edit", sessionID: "unrelated-session", callID: "call-2" }, { args: {} } as never);
+    await expect(runtime.hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "unrelated-session", callID: "call-1" }, { args: {} } as never)).rejects.toThrow("unbound-goat-agent");
+    await expect(runtime.hooks["tool.execute.before"]?.({ tool: "edit", sessionID: "unrelated-session", callID: "call-2" }, { args: {} } as never)).rejects.toThrow("unbound-goat-agent");
     await expect(runtime.hooks["tool.execute.before"]?.({ tool: "goat_state", sessionID: "unrelated-session", callID: "call-3" }, { args: {} } as never)).rejects.toThrow("goat-session-not-bound");
   } finally { runtime.db.close(); }
 });
@@ -125,7 +124,7 @@ test("compaction context preserves minimal durable state and disables auto-conti
   const runtime = createRuntime();
   try {
     await runtime.hooks.config?.({} as never);
-    const created = await runtime.orchestrator.createGoal({ sourceRequest: "compaction", rootSessionId: "root-session", model });
+    const created = await runtime.orchestrator.createGoal({ sourceRequest: "compaction", rootSessionId: "root-session", origin, model });
     if (!created.ok) throw new Error(created.error);
     const output = { context: [] as string[], prompt: undefined };
     await runtime.hooks["experimental.session.compacting"]?.({ sessionID: "root-session" }, output as never);
@@ -140,7 +139,7 @@ test("event routing forwards prompted and rejected events to the Orchestrator", 
   const runtime = createRuntime();
   try {
     await runtime.hooks.config?.({} as never);
-    const created = await runtime.orchestrator.createGoal({ sourceRequest: "events", rootSessionId: "root-session", model });
+    const created = await runtime.orchestrator.createGoal({ sourceRequest: "events", rootSessionId: "root-session", origin, model });
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     await runtime.hooks.event?.({ event: { type: "session.next.prompted", properties: { sessionID: "x", messageID: "y" } } as never });

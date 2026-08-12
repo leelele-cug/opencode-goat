@@ -18,11 +18,17 @@ export const ContractBodySchema = z.object({
 }).strict().readonly();
 export type ContractBody = z.infer<typeof ContractBodySchema>;
 
+export const VerificationStepSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("inspection"), description: ContractTextSchema }).strict(),
+  z.object({ kind: z.literal("command"), command: ContractTextSchema }).strict(),
+]).readonly();
+export type VerificationStep = z.infer<typeof VerificationStepSchema>;
+
 export const AcceptanceCriterionSchema = z.object({
   id: z.string().min(1).max(200),
   priority: z.enum(["must", "should"]),
   description: ContractTextSchema,
-  verificationMethod: ContractTextSchema,
+  verification: z.array(VerificationStepSchema).min(1).max(20),
 }).strict().readonly();
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterionSchema>;
 
@@ -40,6 +46,10 @@ export function computeRevisionHash(body: ContractBody, criteria: readonly Accep
   return canonicalHash({ body, criteria: [...criteria].sort((a, b) => compareCanonicalStrings(a.id, b.id)) });
 }
 
+export function isApprovedVerificationCommand(criteria: readonly AcceptanceCriterion[], command: string): boolean {
+  return criteria.some((criterion) => criterion.verification.some((step) => step.kind === "command" && step.command === command));
+}
+
 export function createRevision(goalId: string, revision: number, body: ContractBody, criteria: readonly AcceptanceCriterion[], createdAt: string): GoalRevision {
   const parsedBody = ContractBodySchema.parse(body);
   const parsedCriteria = z.array(AcceptanceCriterionSchema).min(1).parse(criteria);
@@ -54,13 +64,13 @@ export function createRevision(goalId: string, revision: number, body: ContractB
 }
 
 export function formatContractApprovalSummary(body: ContractBody, criteria: readonly AcceptanceCriterion[]): string {
-  const must = criteria.filter((criterion) => criterion.priority === "must");
   return [
+    `Source request: ${body.sourceRequest}`,
     `Outcome: ${body.outcome}`,
     `Included: ${body.scope.included.join("; ")}`,
     `Excluded: ${body.scope.excluded.length ? body.scope.excluded.join("; ") : "None"}`,
     `Constraints: ${body.constraints.length ? body.constraints.join("; ") : "None"}`,
-    `MUST criteria: ${must.map((criterion) => `${criterion.description} (${criterion.verificationMethod})`).join("; ")}`,
+    `Criteria: ${criteria.map((criterion) => `${criterion.priority.toUpperCase()} ${criterion.id}: ${criterion.description} [${criterion.verification.map((step) => step.kind === "command" ? step.command : `inspect: ${step.description}`).join(" | ")}]`).join("; ")}`,
     `Workspace: ${body.workspace}`,
     `Assumptions: ${body.assumptions.length ? body.assumptions.join("; ") : "None"}`,
   ].join("\n");
@@ -126,7 +136,7 @@ export function evaluateReadiness(body: ContractBody, criteria: readonly Accepta
 
   const infeasibleIds = new Set(parsedFacts.infeasibleCriterionIds);
   const unknownInfeasibleIds = [...infeasibleIds].filter((id) => !criterionIds.has(id));
-  const criteriaFeasible = parsedCriteria.every((criterion) => criterion.verificationMethod.trim().length > 0 && !infeasibleIds.has(criterion.id)) && unknownInfeasibleIds.length === 0;
+  const criteriaFeasible = parsedCriteria.every((criterion) => criterion.verification.length > 0 && !infeasibleIds.has(criterion.id)) && unknownInfeasibleIds.length === 0;
   dimensions.push({
     dimension: "criteria-verifiable",
     status: criteriaFeasible ? "pass" : "block",

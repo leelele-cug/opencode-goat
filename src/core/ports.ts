@@ -26,7 +26,7 @@ export function openCodeMessageId(id: string): string {
 }
 
 export interface ToastPort {
-  show(input: { title?: string; message: string; variant: "info" | "success" | "warning" | "error" }): Promise<void>;
+  show(input: { title?: string; message: string; variant: "info" | "success" | "warning" | "error"; directory?: string }): Promise<void>;
 }
 
 export type NativeQuestionRequest = { id: string; sessionId: string; questions: unknown[]; callId: string | null };
@@ -66,7 +66,6 @@ export interface WorkspacePort {
   probeGit(cwd: string): Promise<{ isGit: boolean; isClean: boolean }>;
   listWorktrees(cwd: string): Promise<{ name: string; path: string }[]>;
   createWorktree(cwd: string, branch: string): Promise<{ path: string; waitUntilReady(): Promise<void> }>;
-  removeWorktree(projectDirectory: string, path: string): Promise<void>;
   captureSnapshot(cwd: string): Promise<{ ok: true; snapshot: WorkspaceSnapshot } | { ok: false; error: string }>;
 }
 

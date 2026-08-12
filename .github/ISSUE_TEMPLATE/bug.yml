@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible Goat problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Include Goat, OpenCode, Bun, Git, and operating system versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Give the smallest reproducible request and exact steps.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Safe diagnostics
+      description: Remove credentials, private source, paths, and sensitive output.

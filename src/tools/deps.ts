@@ -1,6 +1,7 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import type { RegisteredGoatToolId } from "../core/role-capabilities.js";
 import type { ToolCallContext } from "../core/ports.js";
+import { canonicalHash } from "../core/canonical.js";
 
 export function toolContext(context: ToolContext, toolId: RegisteredGoatToolId): ToolCallContext {
   return {
@@ -13,8 +14,9 @@ export function toolContext(context: ToolContext, toolId: RegisteredGoatToolId):
   };
 }
 
-export function operationKey(toolId: RegisteredGoatToolId, context: ToolContext, discriminator = ""): string {
-  return `${toolId}:${context.messageID}${discriminator ? `:${discriminator}` : ""}`;
+export function operationKey(toolId: RegisteredGoatToolId, context: ToolContext, discriminator = "", input?: unknown): string {
+  const suffix = discriminator ? `:${discriminator}` : "";
+  return `${toolId}:${context.messageID}${suffix}${input === undefined ? "" : `:${canonicalHash(input)}`}`;
 }
 
 export async function askNativePermission(context: ToolContext, toolId: RegisteredGoatToolId): Promise<void> {

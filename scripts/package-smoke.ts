@@ -21,14 +21,34 @@ async function pack(): Promise<string> {
   }
 }
 
+async function candidateTarball(): Promise<{ path: string; owned: boolean }> {
+  const supplied = process.env.GOAT_PACKAGE_SMOKE_TARBALL;
+  if (supplied) {
+    await readFile(supplied);
+    return { path: supplied, owned: false };
+  }
+  return { path: await pack(), owned: true };
+}
+
 const allowed = new Set([
   "package.json",
    "README.md",
-   "LICENSE",
-   "SECURITY.md",
-   "CHANGELOG.md",
-   "CONTRIBUTING.md",
-   "CODE_OF_CONDUCT.md",
+   "README.zh-CN.md",
+  "LICENSE",
+   "RELEASING.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "assets/README.md",
+  "assets/brand/goat-mark.svg",
+  "assets/brand/goat-wordmark.svg",
+  "assets/readme/hero.svg",
+  "assets/readme/hero.zh-CN.svg",
+  "assets/readme/workflow.svg",
+  "assets/readme/workflow.zh-CN.svg",
+  "assets/social/github-social-preview.svg",
+  "assets/social/github-social-preview.png",
   "dist/index.js",
   "dist/index.d.ts",
   "dist/core/canonical.js",
@@ -108,7 +128,8 @@ async function listFiles(dir: string, prefix: string): Promise<string[]> {
 
 
 async function main(): Promise<void> {
-  const tarball = await pack();
+  const candidate = await candidateTarball();
+  const tarball = candidate.path;
   try {
     const temp = await mkdtemp(join(tmpdir(), "goat-package-smoke-"));
     try {
@@ -124,8 +145,18 @@ async function main(): Promise<void> {
       if (unexpected.length > 0) throw new Error(`unexpected packaged files: ${unexpected.join(", ")}`);
       const missing = [...allowed].filter((file) => !files.includes(file));
       if (missing.length > 0) throw new Error(`missing packaged files: ${missing.join(", ")}`);
-      const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8")) as { name: string; version: string };
-      if (manifest.name !== "opencode-goat") throw new Error("packaged package name mismatch");
+      for (const file of [...allowed].filter((value) => value.endsWith(".svg"))) {
+        const svg = await readFile(join(installed, file), "utf8");
+        if (!svg.includes("<svg") || /<script|(?:href|xlink:href)=["']https?:\/\//i.test(svg)) throw new Error(`unsafe visual asset: ${file}`);
+      }
+      const preview = await readFile(join(installed, "assets/social/github-social-preview.png"));
+      if (preview.length >= 1_000_000 || preview.readUInt32BE(16) !== 1280 || preview.readUInt32BE(20) !== 640) throw new Error("social preview must be a 1280x640 PNG under 1 MB");
+       const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8")) as { name: string; version: string; engines?: { opencode?: string }; dependencies?: Record<string, string> };
+       if (manifest.name !== "opencode-goat") throw new Error("packaged package name mismatch");
+       if (manifest.engines?.opencode !== ">=1.18.15") throw new Error(`packaged OpenCode engine mismatch: ${manifest.engines?.opencode ?? "missing"}`);
+       if (manifest.dependencies?.["@opencode-ai/plugin"] !== "1.18.15") throw new Error("packaged plugin dependency is not pinned to 1.18.15");
+       if (manifest.dependencies?.["@opencode-ai/sdk"] !== "1.18.15") throw new Error("packaged SDK dependency is not pinned to 1.18.15");
+       if (!Bun.semver.satisfies("1.18.15", manifest.engines.opencode) || Bun.semver.satisfies("1.18.14", manifest.engines.opencode)) throw new Error("packaged OpenCode engine range is invalid");
       const module = await import(pathToFileURL(join(installed, "dist", "index.js")).href) as { default?: { id?: string }; server?: unknown };
       if (module.default?.id !== "goat" || typeof module.server !== "function") throw new Error("packaged export surface mismatch");
       const sourceChecksum = createHash("sha256").update(await readFile(join(root, "dist", "index.js"))).digest("hex");
@@ -136,7 +167,7 @@ async function main(): Promise<void> {
       await rm(temp, { recursive: true, force: true });
     }
   } finally {
-    await rm(tarball, { force: true });
+    if (candidate.owned) await rm(tarball, { force: true });
   }
 }
 

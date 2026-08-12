@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { posix, win32 } from "node:path";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { canonicalHash } from "./canonical.js";
 
 export const WORKSPACE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
@@ -47,7 +48,9 @@ export const WorkspaceSnapshotSchema = z.object({
 export type WorkspaceSnapshot = z.infer<typeof WorkspaceSnapshotSchema>;
 
 export function normalizeWorkspacePath(path: string, platform: WorkspacePlatform): string {
-  const cleaned = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "").replace(/\/+/g, "/");
+  const cleaned = platform === "win32"
+    ? path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "").replace(/\/+/g, "/")
+    : path.replace(/^\.\//, "").replace(/\/+$/, "").replace(/\/+/g, "/");
   if (!cleaned || cleaned.startsWith("/") || /^[a-zA-Z]:\//.test(cleaned) || cleaned.split("/").includes("..")) throw new TypeError(`invalid workspace path: ${path}`);
   return platform === "win32" ? cleaned.toLowerCase() : cleaned;
 }
@@ -137,7 +140,11 @@ function indexDiffEntries(entries: readonly CanonicalDiffEntry[]): Map<string, C
 }
 
 function sameDiffEntry(left: CanonicalDiffEntry, right: CanonicalDiffEntry): boolean {
-  return left.path === right.path && left.status === right.status && left.additions === right.additions && left.deletions === right.deletions && left.patch === right.patch;
+  return left.path === right.path && left.status === right.status && left.additions === right.additions && left.deletions === right.deletions && comparablePatch(left.patch) === comparablePatch(right.patch);
+}
+
+function comparablePatch(patch: string): string {
+  return patch.replace(/\r\n/g, "\n").split("\n").filter((line) => !line.startsWith("diff --git ") && !line.startsWith("index ") && !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("@@ ")).join("\n");
 }
 
 export function canonicalizeExecutorDiff(value: unknown, platform: WorkspacePlatform): { ok: true; entries: readonly CanonicalDiffEntry[] } | { ok: false; code: "invalid-diff-shape" | "patch-missing" | "patch-too-large" } {
@@ -149,7 +156,9 @@ export type WorkspaceComparison =
   | { readonly ok: false; readonly code: "head-changed" | "unattributed-change" | "attribution-incomplete"; readonly detail: string };
 
 export function validateWorkspaceToolArguments(toolId: string, args: unknown, directory: string, platform: WorkspacePlatform): { ok: true } | { ok: false; error: string } {
-  if (toolId === "bash") return { ok: false, error: "executor-shell-disabled" };
+  // Bash remains governed by OpenCode's native permission resolver. Goat can
+  // constrain file-oriented tools, but cannot infer every command side effect.
+  if (toolId === "bash") return { ok: true };
   if (toolId === "write" || toolId === "edit") {
     if (!args || typeof args !== "object") return { ok: false, error: "workspace-target-missing" };
     const record = args as Record<string, unknown>;
@@ -161,7 +170,10 @@ export function validateWorkspaceToolArguments(toolId: string, args: unknown, di
     const record = args as Record<string, unknown>;
     const patch = typeof record.patch === "string" ? record.patch : typeof record.patchText === "string" ? record.patchText : undefined;
     if (!patch) return { ok: false, error: "workspace-patch-missing" };
-    const paths = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1]?.trim()).filter((value): value is string => !!value);
+     const paths = [
+       ...[...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1]?.trim()),
+       ...[...patch.matchAll(/^\*\*\* Move to: (.+)$/gm)].map((match) => match[1]?.trim()),
+     ].filter((value): value is string => !!value);
     if (paths.length === 0 || paths.some((value) => !isWorkspaceTarget(value, directory, platform))) return { ok: false, error: "workspace-target-outside-approved-directory" };
   }
   return { ok: true };
@@ -174,6 +186,8 @@ function isWorkspaceTarget(value: string, directory: string, platform: Workspace
   const candidate = path.resolve(root, value);
   const relative = path.relative(root, candidate);
   if (!(relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)))) return false;
+  const segments = relative.split(/[\\/]/).filter(Boolean);
+  if (segments.some((segment) => segment.toLowerCase() === ".git")) return false;
   try {
     const realRoot = realpathSync(root);
     const existing = nearestExistingPath(candidate, path);
@@ -255,7 +269,7 @@ export function assertExecutorOwnsSnapshot(baseline: WorkspaceSnapshot, current:
   for (const [path, contentHash] of currentUntracked) {
     if (baselineUntracked.get(path) === contentHash) continue;
     const attributed = executor.get(path);
-    if (!attributed || attributed.status !== "added" || attributed.patch.length === 0) return { ok: false, code: "attribution-incomplete", detail: `Untracked file ${path} is not attributed to the Executor Session.` };
+    if (!attributed || attributed.status !== "added" || addedPatchContentHash(attributed.patch) !== contentHash) return { ok: false, code: "attribution-incomplete", detail: `Untracked file ${path} is not attributed to the Executor Session.` };
   }
   for (const path of baselineUntracked.keys()) {
     if (currentUntracked.has(path)) continue;
@@ -263,6 +277,14 @@ export function assertExecutorOwnsSnapshot(baseline: WorkspaceSnapshot, current:
     if (!attributed || attributed.status !== "deleted") return { ok: false, code: "attribution-incomplete", detail: `Removed untracked file ${path} is not attributed to the Executor Session.` };
   }
   return { ok: true };
+}
+
+function addedPatchContentHash(patch: string): string | undefined {
+  const lines = patch.split(/\r?\n/);
+  const added = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+  if (added.length === 0) return undefined;
+  const content = added.map((line) => line.slice(1)).join("\n") + (patch.endsWith("\n") && !patch.includes("\\ No newline at end of file") ? "\n" : "");
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 function indexStatusEntries(entries: readonly CanonicalStatusEntry[]): Map<string, CanonicalStatusEntry> {

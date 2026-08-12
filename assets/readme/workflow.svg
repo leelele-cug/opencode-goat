@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620" role="img" aria-labelledby="title desc">
+  <title id="title">Goat evidence loop workflow</title>
+  <desc id="desc">Intent is shaped into a Contract, approved by a human, executed in a scoped workspace, and independently verified. Failed verification returns to execution for correction.</desc>
+  <defs>
+    <marker id="arrow-lime" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#b7ef4a"/></marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#67d6ce"/></marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#ffb45b"/></marker>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#6a8587" stroke-opacity=".12"/></pattern>
+  </defs>
+  <rect width="1400" height="620" rx="28" fill="#172329"/>
+  <rect width="1400" height="620" rx="28" fill="url(#grid)"/>
+  <text x="70" y="70" fill="#b7ef4a" font-family="Consolas,monospace" font-size="16" letter-spacing="4">THE EVIDENCE LOOP</text>
+  <text x="70" y="108" fill="#f4efe4" font-family="Arial,Helvetica,sans-serif" font-size="30" font-weight="700">Authority moves forward. Proof comes back.</text>
+  <text x="70" y="137" fill="#91aaa5" font-family="Arial,Helvetica,sans-serif" font-size="16">The user owns the gate; every MUST criterion owns a piece of evidence.</text>
+  <path d="M365 260C450 260 475 180 550 180" fill="none" stroke="#b7ef4a" stroke-width="4" marker-end="url(#arrow-lime)"/>
+  <path d="M850 180C930 180 960 260 1035 260" fill="none" stroke="#b7ef4a" stroke-width="4" marker-end="url(#arrow-lime)"/>
+  <path d="M1165 375C1165 475 1020 500 850 500" fill="none" stroke="#67d6ce" stroke-width="4" marker-end="url(#arrow-cyan)"/>
+  <path d="M850 500C980 500 980 410 1035 360" fill="none" stroke="#ffb45b" stroke-width="3" stroke-dasharray="9 10" marker-end="url(#arrow-orange)"/>
+  <text x="900" y="218" fill="#b7ef4a" font-family="Consolas,monospace" font-size="12" letter-spacing="2">APPROVED AUTHORITY</text>
+  <text x="950" y="476" fill="#67d6ce" font-family="Consolas,monospace" font-size="12" letter-spacing="2">EVIDENCE RETURNS</text>
+  <text x="875" y="545" fill="#ffcf91" font-family="Consolas,monospace" font-size="12" letter-spacing="2">FAIL / REVISE / RETRY</text>
+  <g font-family="Arial,Helvetica,sans-serif">
+    <g transform="translate(70 205)">
+      <rect width="295" height="170" rx="20" fill="#203237" stroke="#45605f" stroke-width="2"/>
+      <circle cx="42" cy="42" r="22" fill="#172329" stroke="#67d6ce" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#67d6ce" font-family="Consolas,monospace" font-size="15">01</text>
+      <text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">Shape intent</text>
+      <text x="28" y="93" fill="#c9d7d1" font-size="15">Formulator stays read-only.</text>
+      <text x="28" y="119" fill="#91aaa5" font-size="14">Outcome, scope, constraints,</text>
+      <text x="28" y="141" fill="#91aaa5" font-size="14">assumptions and MUST criteria.</text>
+    </g>
+    <g transform="translate(550 95)">
+      <rect width="300" height="170" rx="20" fill="#203237" stroke="#ffb45b" stroke-width="2"/>
+      <circle cx="42" cy="42" r="22" fill="#172329" stroke="#ffb45b" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#ffb45b" font-family="Consolas,monospace" font-size="15">02</text>
+      <text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">Open the gate</text>
+      <text x="28" y="93" fill="#c9d7d1" font-size="15">User approves the exact Contract.</text>
+      <text x="28" y="119" fill="#ffcf91" font-size="14">No project write before this point.</text>
+      <text x="28" y="141" fill="#91aaa5" font-size="14">Native permissions stay final.</text>
+    </g>
+    <g transform="translate(1035 205)">
+      <rect width="295" height="170" rx="20" fill="#203237" stroke="#b7ef4a" stroke-width="2"/>
+      <circle cx="42" cy="42" r="22" fill="#172329" stroke="#b7ef4a" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#b7ef4a" font-family="Consolas,monospace" font-size="15">03</text>
+      <text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">Execute + record</text>
+      <text x="28" y="93" fill="#c9d7d1" font-size="15">Executor works in the approved</text>
+      <text x="28" y="119" fill="#91aaa5" font-size="14">workspace and records evidence</text>
+      <text x="28" y="141" fill="#91aaa5" font-size="14">for every MUST criterion.</text>
+    </g>
+    <g transform="translate(550 415)">
+      <rect width="300" height="155" rx="20" fill="#203237" stroke="#67d6ce" stroke-width="2"/>
+      <circle cx="42" cy="42" r="22" fill="#172329" stroke="#67d6ce" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#67d6ce" font-family="Consolas,monospace" font-size="15">04</text>
+      <text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">Verify independently</text>
+      <text x="28" y="91" fill="#c9d7d1" font-size="15">Verifier checks the diff and proof.</text>
+      <text x="28" y="117" fill="#67d6ce" font-size="14">PASS completes. FAIL returns to 03.</text>
+    </g>
+  </g>
+  <g transform="translate(1050 510)"><rect width="280" height="54" rx="15" fill="#b7ef4a"/><text x="140" y="34" text-anchor="middle" fill="#172329" font-family="Consolas,monospace" font-size="14" font-weight="700" letter-spacing="2">COMPLETION = PROOF</text></g>
+</svg>

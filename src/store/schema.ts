@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 import type { DatabaseConnection } from "./database.js";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 export const SCHEMA_APPLICATION_ID = 0x676F6174;
 
 const GOAL_STATES = "'FORMING','AWAITING_APPROVAL','ACTIVE','VERIFYING','PAUSED','BLOCKED','COMPLETED','CANCELLED'";
 const NON_TERMINAL_GOAL_STATES = "'FORMING','AWAITING_APPROVAL','ACTIVE','VERIFYING','PAUSED','BLOCKED'";
-const RUN_STATUSES = "'PREPARING','ACTIVE','VERIFYING','PAUSED','BLOCKED','COMPLETED','CANCELLED'";
-const ACTIVE_RUN_STATUSES = "'PREPARING','ACTIVE','VERIFYING','PAUSED','BLOCKED'";
+const RUN_STATUSES = "'PREPARING','ACTIVE','FINALIZING','VERIFYING','PAUSED','BLOCKED','COMPLETED','CANCELLED'";
+const ACTIVE_RUN_STATUSES = "'PREPARING','ACTIVE','FINALIZING','VERIFYING','PAUSED','BLOCKED'";
 const APPROVAL_STATUSES = "'PENDING','APPROVED','REVISED','CANCELLED','REJECTED','EXPIRED','INVALIDATED'";
 const DISPATCH_STATUSES = "'PENDING','SENT','STARTED','COMPLETED','FAILED','SUPERSEDED'";
 const DISPATCH_KINDS = "'approval-reissue','executor-initial','executor-remediation','executor-resume','verifier'";
 const DISPATCH_ROLES = "'formulator','executor','verifier'";
-const VERIFICATION_OUTCOMES = "'PENDING','PASS','FAIL','BLOCKED'";
-const BLOCKER_CODES = "'approval-not-approved','workspace-preparation-failed','workspace-head-changed','workspace-dirty-at-activation','workspace-concurrent-changes','workspace-comparison-invalid','workspace-changed-during-verification','verification-budget-exhausted','verification-failed','executor-prompt-rejected','verifier-prompt-rejected','multiple-matching-approval-questions','multiple-matching-executor-sessions','multiple-matching-verifier-sessions','multiple-stable-worktrees','resume-worktree-missing','run-workspace-missing','recovery-workspace-invalid','executor-session-mismatch','verifier-session-mismatch','dispatch-identity-mismatch','executor-blocked','user-blocked'";
+const VERIFICATION_OUTCOMES = "'PENDING','PASS','FAIL','ERROR','BLOCKED'";
+const BLOCKER_CODES = "'approval-not-approved','workspace-preparation-failed','workspace-head-changed','workspace-dirty-at-activation','workspace-concurrent-changes','workspace-comparison-invalid','workspace-changed-during-verification','verification-budget-exhausted','verification-failed','executor-prompt-rejected','verifier-prompt-rejected','multiple-matching-approval-questions','multiple-matching-executor-sessions','multiple-matching-verifier-sessions','multiple-stable-worktrees','resume-worktree-missing','run-workspace-missing','recovery-workspace-invalid','executor-session-mismatch','verifier-session-mismatch','dispatch-identity-mismatch','executor-session-ended','verifier-session-ended','session-error','executor-blocked','user-blocked'";
 
 const MODEL_COLUMNS = "model_provider_id TEXT, model_id TEXT, model_variant TEXT";
 
@@ -110,7 +110,7 @@ export const SCHEMA_DDL: readonly string[] = [
     criterion_id TEXT NOT NULL CHECK (length(trim(criterion_id)) > 0),
     priority TEXT NOT NULL CHECK (priority IN ('must','should')),
     description TEXT NOT NULL CHECK (length(trim(description)) > 0),
-    verification_method TEXT NOT NULL CHECK (length(trim(verification_method)) > 0),
+     verification_json TEXT NOT NULL CHECK (json_valid(verification_json)),
     UNIQUE (goal_id, revision, criterion_id),
     FOREIGN KEY (goal_id, revision) REFERENCES contract_revisions(goal_id, revision) ON DELETE RESTRICT
   )`,
@@ -138,8 +138,8 @@ export const SCHEMA_DDL: readonly string[] = [
     executor_workspace_id TEXT,
     ${MODEL_COLUMNS},
     status TEXT NOT NULL CHECK (status IN (${RUN_STATUSES})),
-    verification_attempts INTEGER NOT NULL DEFAULT 0 CHECK (verification_attempts BETWEEN 0 AND 8),
-    extra_verification_authorized INTEGER NOT NULL DEFAULT 0 CHECK (extra_verification_authorized IN (0,1,2)),
+     verification_attempts INTEGER NOT NULL DEFAULT 0 CHECK (verification_attempts >= 0),
+     verification_batch INTEGER NOT NULL DEFAULT 1 CHECK (verification_batch >= 1),
     preparation_retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (preparation_retry_requested IN (0,1)),
     row_version INTEGER NOT NULL DEFAULT 0 CHECK (row_version >= 0),
     created_at TEXT NOT NULL,
@@ -159,15 +159,6 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE UNIQUE INDEX runs_one_live_workspace
     ON runs(workspace_path) WHERE status IN (${ACTIVE_RUN_STATUSES}) AND workspace_path IS NOT NULL`,
   `CREATE INDEX runs_goal_revision ON runs(goal_id, revision, created_at)`,
-  `CREATE TRIGGER runs_attempt_eight_authorization BEFORE UPDATE OF verification_attempts ON runs
-    WHEN NEW.verification_attempts = 8 AND NEW.extra_verification_authorized != 2
-    BEGIN SELECT RAISE(ABORT, 'attempt eight requires consumed authorization'); END`,
-  `CREATE TRIGGER runs_attempt_eight_insert BEFORE INSERT ON runs
-    WHEN NEW.verification_attempts = 8
-    BEGIN SELECT RAISE(ABORT, 'attempt eight cannot be inserted'); END`,
-  `CREATE TRIGGER runs_authorization_transition BEFORE UPDATE OF extra_verification_authorized ON runs
-    WHEN NEW.extra_verification_authorized NOT IN (OLD.extra_verification_authorized, 2) AND NOT (OLD.extra_verification_authorized = 0 AND NEW.extra_verification_authorized = 1)
-    BEGIN SELECT RAISE(ABORT, 'extra verification authorization cannot change that way'); END`,
   `CREATE TRIGGER runs_identity_immutable BEFORE UPDATE OF run_id, goal_id, approval_attempt_id, revision, approved_revision_hash, workspace_strategy, worktree_name, executor_session_key, model_provider_id, model_id, model_variant, created_at ON runs
     WHEN NEW.run_id IS NOT OLD.run_id OR NEW.goal_id IS NOT OLD.goal_id OR NEW.approval_attempt_id IS NOT OLD.approval_attempt_id OR NEW.revision IS NOT OLD.revision OR NEW.approved_revision_hash IS NOT OLD.approved_revision_hash OR NEW.workspace_strategy IS NOT OLD.workspace_strategy OR NEW.worktree_name IS NOT OLD.worktree_name OR NEW.executor_session_key IS NOT OLD.executor_session_key OR NEW.model_provider_id IS NOT OLD.model_provider_id OR NEW.model_id IS NOT OLD.model_id OR NEW.model_variant IS NOT OLD.model_variant OR NEW.created_at IS NOT OLD.created_at
     BEGIN SELECT RAISE(ABORT, 'run identity is immutable'); END`,
@@ -181,7 +172,7 @@ export const SCHEMA_DDL: readonly string[] = [
     contract_hash TEXT NOT NULL CHECK (length(contract_hash) = 64),
     kind TEXT NOT NULL CHECK (kind IN (${DISPATCH_KINDS})),
     role TEXT NOT NULL CHECK (role IN (${DISPATCH_ROLES})),
-    verification_attempt INTEGER CHECK (verification_attempt IS NULL OR verification_attempt BETWEEN 1 AND 8),
+     verification_attempt INTEGER CHECK (verification_attempt IS NULL OR verification_attempt >= 1),
     target_session_id TEXT,
     directory TEXT,
     message_id TEXT UNIQUE NOT NULL CHECK (message_id GLOB 'msg_*'),
@@ -240,7 +231,7 @@ export const SCHEMA_DDL: readonly string[] = [
     run_id TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision >= 0),
     contract_hash TEXT NOT NULL CHECK (length(contract_hash) = 64),
-    attempt INTEGER NOT NULL CHECK (attempt BETWEEN 1 AND 8),
+     attempt INTEGER NOT NULL CHECK (attempt >= 1),
     verifier_session_id TEXT,
     verifier_session_key TEXT,
     model_provider_id TEXT,
@@ -269,7 +260,7 @@ export const SCHEMA_DDL: readonly string[] = [
         AND NEW.model_provider_id IS OLD.model_provider_id AND NEW.model_id IS OLD.model_id AND NEW.model_variant IS OLD.model_variant
         AND NEW.created_at = OLD.created_at AND NEW.finalized_at IS NULL)
       OR
-      (OLD.outcome = 'PENDING' AND NEW.outcome IN ('PASS','FAIL','BLOCKED') AND NEW.finalized_at IS NOT NULL
+       (OLD.outcome = 'PENDING' AND NEW.outcome IN ('PASS','FAIL','ERROR','BLOCKED') AND NEW.finalized_at IS NOT NULL
         AND NEW.result_id = OLD.result_id AND NEW.goal_id = OLD.goal_id AND NEW.run_id = OLD.run_id AND NEW.revision = OLD.revision
         AND NEW.contract_hash = OLD.contract_hash AND NEW.attempt = OLD.attempt AND NEW.verifier_session_id = OLD.verifier_session_id
         AND NEW.verifier_session_key = OLD.verifier_session_key
@@ -279,9 +270,6 @@ export const SCHEMA_DDL: readonly string[] = [
     BEGIN SELECT RAISE(ABORT, 'verification result update is not legal'); END`,
   `CREATE TRIGGER verification_results_no_delete BEFORE DELETE ON verification_results
     BEGIN SELECT RAISE(ABORT, 'verification results are immutable'); END`,
-  `CREATE TRIGGER verification_results_attempt_eight_authorization BEFORE INSERT ON verification_results
-    WHEN NEW.attempt = 8 AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id=NEW.run_id AND extra_verification_authorized=2)
-    BEGIN SELECT RAISE(ABORT, 'attempt eight result requires consumed authorization'); END`,
 
   `CREATE TABLE session_bindings (
     session_id TEXT PRIMARY KEY NOT NULL,
@@ -362,10 +350,10 @@ const EXPECTED_SCHEMA_OBJECTS = SCHEMA_DDL.map(expectedObject);
 export const EXPECTED_SCHEMA_SIGNATURE = schemaSignature(EXPECTED_SCHEMA_OBJECTS);
 
 /**
- * Reviewed golden signature for the approved Schema v6 release. Changing the
+ * Reviewed golden signature for the approved Schema v8 release. Changing the
  * DDL without consciously updating this constant fails the schema tests.
  */
-export const GOLDEN_SCHEMA_SIGNATURE = "ca9a0e0984342b9567473b4a525789f86eb4cf5b396a61c1f1035949a4ddbe3c";
+export const GOLDEN_SCHEMA_SIGNATURE = "1f37895dea514b32981488f8d6d0734c284e355ae7db03384920df2fc5b4ea52";
 
 export function validateSchema(db: DatabaseConnection): void {
   const actualObjects = db.listSchemaObjects().map((object) => ({ ...object, sql: normalizeSql(object.sql) }));

@@ -26,7 +26,7 @@ function createProposedApproved(store: Store, workspace: "current" | "worktree" 
   if (!created.ok) throw new Error(created.error);
   const goalId = created.goalId;
   const token = store.getOwnedFencingToken(goalId)!;
-  const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace }, [{ id: "c", priority: "must", description: "works", verificationMethod: "inspect" }], readyGateFacts, "proposal-key-1", { head: "a".repeat(40), clean: true });
+  const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace }, [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], readyGateFacts, "proposal-key-1", { head: "a".repeat(40), clean: true });
   if (!proposal.ok || !proposal.ready) throw new Error("proposal failed");
   const bound = store.bindApprovalQuestion(goalId, token, "call-1", proposal.nativeQuestion);
   if (!bound.ok) throw new Error(bound.error);
@@ -53,6 +53,8 @@ test("end-to-end approval, activation, evidence, and verification completion", (
     if (!evidence.ok) throw new Error(evidence.error);
     expect(store.recordEvidence(goalId, token, runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: "executor-session" }, "evidence-key-1")).toEqual({ ok: true, evidenceId: evidence.evidenceId });
 
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
+    expect(store.getRun(goalId)?.status).toBe("FINALIZING");
     const completion = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-1");
     if (!completion.ok) throw new Error(completion.error);
     expect(store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-1")).toEqual(completion);
@@ -80,6 +82,7 @@ test("verification failure creates a remediation dispatch and returns to ACTIVE"
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     const evidence = store.recordEvidence(goalId, token, runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: "executor-session" }, "evidence-key-1");
     if (!evidence.ok) throw new Error(evidence.error);
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
     const completion = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-1");
     if (!completion.ok) throw new Error(completion.error);
     store.bindVerifierSession(goalId, token, completion.dispatchId, "verifier-session", "verifier-key-1");
@@ -92,7 +95,7 @@ test("verification failure creates a remediation dispatch and returns to ACTIVE"
   } finally { db.close(); }
 });
 
-test("attempt eight requires explicit consumed authorization and direct jumps are rejected", () => {
+test("the tenth failure blocks and resume starts a new ten-round batch", () => {
   const { db, store } = freshStore();
   try {
     const { goalId, token, runId } = createProposedApproved(store);
@@ -101,32 +104,49 @@ test("attempt eight requires explicit consumed authorization and direct jumps ar
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     const evidence = store.recordEvidence(goalId, token, runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: "executor-session" }, "evidence-key-1");
     if (!evidence.ok) throw new Error(evidence.error);
-    for (let attempt = 1; attempt <= 6; attempt += 1) {
+    for (let attempt = 1; attempt <= 9; attempt += 1) {
+      expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
       const completion = store.proposeCompletion(goalId, token, runId, snapshot(), [], `completion-key-${attempt}`);
       if (!completion.ok) throw new Error(completion.error);
       store.bindVerifierSession(goalId, token, completion.dispatchId, `verifier-${attempt}`, `verifier-key-${attempt}`);
       const reported = store.recordVerificationAndMaybeRemediate(goalId, token, runId, `verifier-${attempt}`, [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
       if (!reported.ok || reported.outcome !== "ACTIVE") throw new Error(`attempt ${attempt} did not remediate`);
     }
-    const seventh = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-7");
-    if (!seventh.ok) throw new Error(seventh.error);
-    store.bindVerifierSession(goalId, token, seventh.dispatchId, "verifier-7", "verifier-key-7");
-    const seventhReport = store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-7", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
-    if (!seventhReport.ok) throw new Error(seventhReport.error);
-    expect(seventhReport.outcome).toBe("BLOCKED");
-    expect(store.getGoal(goalId)?.blockerCode).toBe("verification-failed");
-    expect(store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-7", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }])).toMatchObject({ ok: true, outcome: "BLOCKED" });
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
+    const tenth = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-10");
+    if (!tenth.ok) throw new Error(tenth.error);
+    store.bindVerifierSession(goalId, token, tenth.dispatchId, "verifier-10", "verifier-key-10");
+    const tenthReport = store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-10", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
+    if (!tenthReport.ok) throw new Error(tenthReport.error);
+    expect(tenthReport.outcome).toBe("BLOCKED");
+    expect(store.getGoal(goalId)?.blockerCode).toBe("verification-budget-exhausted");
+    expect(store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-10", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }])).toMatchObject({ ok: true, outcome: "BLOCKED" });
 
     const resumed = store.resumeAndDispatch(goalId, token, runId, snapshot(), []);
     if (!resumed.ok) throw new Error(resumed.error);
-    const eighth = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-8");
-    if (!eighth.ok) throw new Error(eighth.error);
-    expect(eighth.attempt).toBe(8);
-    store.bindVerifierSession(goalId, token, eighth.dispatchId, "verifier-8", "verifier-key-8");
-    const eighthReport = store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-8", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
-    if (!eighthReport.ok) throw new Error(eighthReport.error);
-    expect(eighthReport.outcome).toBe("BLOCKED");
-    expect(store.getGoal(goalId)?.blockerCode).toBe("verification-budget-exhausted");
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
+    const eleventh = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-11");
+    if (!eleventh.ok) throw new Error(eleventh.error);
+    expect(eleventh.attempt).toBe(11);
+    store.bindVerifierSession(goalId, token, eleventh.dispatchId, "verifier-11", "verifier-key-11");
+    const eleventhReport = store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-11", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
+    if (!eleventhReport.ok || eleventhReport.outcome !== "ACTIVE") throw new Error("attempt 11 did not start the second batch");
+    for (let attempt = 12; attempt <= 19; attempt += 1) {
+      expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
+      const completion = store.proposeCompletion(goalId, token, runId, snapshot(), [], `completion-key-${attempt}`);
+      if (!completion.ok) throw new Error(completion.error);
+      store.bindVerifierSession(goalId, token, completion.dispatchId, `verifier-${attempt}`, `verifier-key-${attempt}`);
+      const reported = store.recordVerificationAndMaybeRemediate(goalId, token, runId, `verifier-${attempt}`, [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
+      if (!reported.ok || reported.outcome !== "ACTIVE") throw new Error(`attempt ${attempt} did not remediate`);
+    }
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
+    const twentieth = store.proposeCompletion(goalId, token, runId, snapshot(), [], "completion-key-20");
+    if (!twentieth.ok) throw new Error(twentieth.error);
+    store.bindVerifierSession(goalId, token, twentieth.dispatchId, "verifier-20", "verifier-key-20");
+    const twentiethReport = store.recordVerificationAndMaybeRemediate(goalId, token, runId, "verifier-20", [{ criterionId: "c", result: "fail", evidenceIds: [evidence.evidenceId] }]);
+    if (!twentiethReport.ok) throw new Error(twentiethReport.error);
+    expect(twentiethReport.outcome).toBe("BLOCKED");
+    expect(store.getRun(goalId)?.verificationBatch).toBe(2);
   } finally { db.close(); }
 });
 
@@ -151,7 +171,7 @@ test("approval rejection blocks the Goal and resume creates a new generation on 
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     const token = store.getOwnedFencingToken(goalId)!;
-    const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace: "current" }, [{ id: "c", priority: "must", description: "works", verificationMethod: "inspect" }], readyGateFacts, "proposal-key-1", { head: "a".repeat(40), clean: true });
+    const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace: "current" }, [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], readyGateFacts, "proposal-key-1", { head: "a".repeat(40), clean: true });
     if (!proposal.ok || !proposal.ready) throw new Error("proposal failed");
 
     expect(store.markApprovalRejected(goalId, token, "event-1")).toMatchObject({ ok: true });
@@ -178,7 +198,7 @@ test("expired approvals immediately create a pending reissue generation", () => 
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     const token = store.getOwnedFencingToken(goalId)!;
-    const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace: "current" }, [{ id: "c", priority: "must", description: "works", verificationMethod: "inspect" }], readyGateFacts, "proposal-key-expire", { head: "a".repeat(40), clean: true });
+    const proposal = store.proposeContract(goalId, token, { outcome: "works", scope: { included: ["x"], excluded: [] }, constraints: [], assumptions: [], workspace: "current" }, [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], readyGateFacts, "proposal-key-expire", { head: "a".repeat(40), clean: true });
     if (!proposal.ok || !proposal.ready) throw new Error("proposal failed");
     const live = store.getLiveApproval(goalId)!;
     advance(16 * 60 * 1000);
@@ -211,6 +231,7 @@ test("completion blocks on unexplained workspace changes", () => {
       rawDiff: "",
       platform: "linux",
     });
+    expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
     const completion = store.proposeCompletion(goalId, token, runId, finalState, [], "completion-key-1");
     expect(completion.ok).toBe(false);
     expect(completion.ok || completion.error).toBe("workspace-concurrent-changes");
@@ -322,5 +343,5 @@ test("schema version 3 and foreign schema objects are rejected without modificat
 
 test("schema signature is pinned by the golden constant", () => {
   expect(EXPECTED_SCHEMA_SIGNATURE.length).toBe(64);
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBe(8);
 });

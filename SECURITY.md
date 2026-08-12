@@ -20,6 +20,7 @@ private vulnerability reporting for this repository:
 Include the package version, OpenCode version, platform, reproduction steps,
 and whether sensitive data was involved.
 
-Supported releases are pinned to the OpenCode version declared in
-`package.json`. Database schema changes are intentionally incompatible unless
-the release notes state otherwise.
+Supported hosts must satisfy the `engines.opencode` range declared in
+`package.json`. The OpenCode plugin and SDK dependencies remain exact release
+build pins. Database schema changes are intentionally incompatible unless the
+release notes state otherwise.
