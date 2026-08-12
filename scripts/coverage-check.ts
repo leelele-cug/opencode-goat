@@ -11,17 +11,25 @@ let output = `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${result.error?.me
 const exitCode = result.status ?? 1;
 output = stripAnsi(output);
 process.stdout.write(output);
+const coverageLines = output.split(/\r?\n/).filter((line) => /\bAll files\b/.test(line));
+const coverageLine = coverageLines[0];
+const textMatch = coverageLine?.match(/All files\s*\|\s*[\d.]+\s*\|\s*([\d.]+)/);
 const reportDiagnostic = (): void => {
-  const diagnostic = output.trim().slice(-6_000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-  process.stderr.write(`Coverage diagnostics:\n${output.trim().slice(-6_000)}\n`);
+  const summary = [
+    `exec=${process.execPath}`,
+    `exit=${exitCode}`,
+    `bytes=${output.length}`,
+    `allFiles=${JSON.stringify(coverageLines)}`,
+    `parsedLines=${textMatch?.[1] ?? "none"}`,
+  ].join("; ");
+  const diagnostic = summary.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  process.stderr.write(`Coverage diagnostics: ${summary}\n`);
   if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=Coverage diagnostics::${diagnostic}\n`);
 };
 if (exitCode !== 0) {
   reportDiagnostic();
   process.exit(exitCode);
 }
-const coverageLine = output.split(/\r?\n/).find((line) => /\bAll files\b/.test(line));
-const textMatch = coverageLine?.match(/All files\s*\|\s*[\d.]+\s*\|\s*([\d.]+)/);
 const lines = Number(textMatch?.[1]);
 if (!Number.isFinite(lines)) {
   reportDiagnostic();
