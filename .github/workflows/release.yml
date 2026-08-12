@@ -31,6 +31,7 @@ jobs:
         run: |
           test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
       - run: bun run typecheck
+      - run: bun test
       - run: bun run coverage:check
       - name: Create candidate tarball
         run: bun pm pack --destination .
