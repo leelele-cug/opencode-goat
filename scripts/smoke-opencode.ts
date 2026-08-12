@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const bunExecutable = Bun.which("bun") ?? process.execPath;
 const timeoutMs = Number(process.env.OPENCODE_SMOKE_TIMEOUT_MS ?? 300_000);
 const envKeys = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_GOAT_HOME", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD"] as const;
-const smokeModel = process.env.OPENCODE_SMOKE_MODEL ?? "Ark/deepseek-v4-flash";
+const smokeModel = process.env.OPENCODE_SMOKE_MODEL ?? "opencode/deepseek-v4-flash";
 const smokeModelSeparator = smokeModel.indexOf("/");
 if (smokeModelSeparator <= 0 || smokeModelSeparator === smokeModel.length - 1) throw new Error(`OPENCODE_SMOKE_MODEL must be provider/model, received ${smokeModel}`);
 const smokeProvider = smokeModel.slice(0, smokeModelSeparator);

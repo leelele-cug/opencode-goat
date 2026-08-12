@@ -102,7 +102,7 @@ bun run coverage:check    覆盖率门禁
 bun run build             构建 dist/
 bun test                  单元和集成测试
 bun run pack:smoke        真实 tarball 安装与 export 检查
-bun run smoke:opencode    authenticated smoke，默认使用 Ark/deepseek-v4-flash
+bun run smoke:opencode    authenticated smoke，默认使用 opencode/deepseek-v4-flash
 ```
 
 ## 许可证

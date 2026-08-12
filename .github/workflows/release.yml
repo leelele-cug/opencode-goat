@@ -43,7 +43,7 @@ jobs:
       - name: Run authenticated smoke against minimum and latest OpenCode
         env:
           OPENCODE_CONFIG_CONTENT: ${{ secrets.OPENCODE_CONFIG_CONTENT }}
-          OPENCODE_SMOKE_MODEL: ${{ vars.OPENCODE_SMOKE_MODEL || 'Ark/deepseek-v4-flash' }}
+          OPENCODE_SMOKE_MODEL: ${{ vars.OPENCODE_SMOKE_MODEL || 'opencode/deepseek-v4-flash' }}
         run: |
           version=$(node -p "require('./package.json').version")
           minimum=$(node -p "require('./package.json').engines.opencode.match(/>=([0-9.]+)/)[1]")
