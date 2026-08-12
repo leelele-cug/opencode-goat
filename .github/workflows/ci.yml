@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          bun test --coverage --coverage-reporter=text > coverage.txt 2>&1
+          bun test --coverage --coverage-reporter=lcov --coverage-dir=coverage > coverage.txt 2>&1
           status=$?
           cat coverage.txt
           echo "coverage exit code: $status"
@@ -38,13 +38,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          bun test --coverage --coverage-reporter=text *> coverage.txt
+          bun test --coverage --coverage-reporter=lcov --coverage-dir=coverage *> coverage.txt
           $status = $LASTEXITCODE
           Get-Content coverage.txt
           Write-Host "coverage exit code: $status"
           "GOAT_COVERAGE_EXIT_CODE=$status" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Enforce aggregate coverage
-        run: bun scripts/coverage-check.ts coverage.txt
+        run: bun scripts/coverage-check.ts coverage/lcov.info
       - run: bun scripts/package-smoke.ts
 
   authenticated-smoke:

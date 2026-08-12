@@ -36,13 +36,13 @@ jobs:
         shell: bash
         run: |
           set +e
-          bun test --coverage --coverage-reporter=text > coverage.txt 2>&1
+          bun test --coverage --coverage-reporter=lcov --coverage-dir=coverage > coverage.txt 2>&1
           status=$?
           cat coverage.txt
           echo "coverage exit code: $status"
           echo "GOAT_COVERAGE_EXIT_CODE=$status" >> "$GITHUB_ENV"
       - name: Enforce aggregate coverage
-        run: bun scripts/coverage-check.ts coverage.txt
+        run: bun scripts/coverage-check.ts coverage/lcov.info
       - name: Create candidate tarball
         run: bun pm pack --destination .
       - name: Verify candidate package

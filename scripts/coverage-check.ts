@@ -15,21 +15,25 @@ if (reportPath) {
   exitCode = result.status ?? 1;
 }
 output = stripAnsi(output);
-process.stdout.write(output);
+if (!reportPath) process.stdout.write(output);
 const diagnostic = output.trim().slice(-6_000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 const reportDiagnostic = (): void => {
   process.stderr.write(`Coverage diagnostics:\n${output.trim().slice(-6_000)}\n`);
   if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=Coverage diagnostics::${diagnostic}\n`);
 };
-const coverageLine = output.split(/\r?\n/).find((line) => /\bAll files\b/.test(line));
-const match = coverageLine?.match(/All files\s*\|\s*[\d.]+\s*\|\s*([\d.]+)/);
-if (!match) {
-  reportDiagnostic();
-  throw new Error("coverage summary was not found");
-}
-if (exitCode !== 0 && !/\b0 fail\b/.test(output)) {
+if (exitCode !== 0) {
   reportDiagnostic();
   process.exit(exitCode);
 }
-const lines = Number(match[1]);
+const lcovLineTotals = [...output.matchAll(/^LF:(\d+)$/gm)].map((match) => Number(match[1]));
+const lcovHitTotals = [...output.matchAll(/^LH:(\d+)$/gm)].map((match) => Number(match[1]));
+const lcovLines = lcovLineTotals.reduce((total, value) => total + value, 0);
+const lcovHits = lcovHitTotals.reduce((total, value) => total + value, 0);
+const coverageLine = output.split(/\r?\n/).find((line) => /\bAll files\b/.test(line));
+const textMatch = coverageLine?.match(/All files\s*\|\s*[\d.]+\s*\|\s*([\d.]+)/);
+const lines = lcovLines > 0 ? (lcovHits / lcovLines) * 100 : Number(textMatch?.[1]);
+if (!Number.isFinite(lines)) {
+  reportDiagnostic();
+  throw new Error("coverage summary was not found");
+}
 if (!Number.isFinite(lines) || lines < minimumLines) throw new Error(`line coverage ${lines}% is below required ${minimumLines}%`);
