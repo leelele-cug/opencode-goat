@@ -29,15 +29,20 @@ jobs:
         shell: bash
         run: |
           set +e
-          bun test --coverage 2>&1 | tee coverage.txt
-          status=${PIPESTATUS[0]}
+          bun test --coverage --coverage-reporter=text > coverage.txt 2>&1
+          status=$?
+          cat coverage.txt
           echo "coverage exit code: $status"
+          echo "GOAT_COVERAGE_EXIT_CODE=$status" >> "$GITHUB_ENV"
       - name: Generate coverage report (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          bun test --coverage 2>&1 | Tee-Object coverage.txt
-          Write-Host "coverage exit code: $LASTEXITCODE"
+          bun test --coverage --coverage-reporter=text *> coverage.txt
+          $status = $LASTEXITCODE
+          Get-Content coverage.txt
+          Write-Host "coverage exit code: $status"
+          "GOAT_COVERAGE_EXIT_CODE=$status" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Enforce aggregate coverage
         run: bun scripts/coverage-check.ts coverage.txt
       - run: bun scripts/package-smoke.ts

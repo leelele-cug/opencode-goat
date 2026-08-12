@@ -36,9 +36,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          bun test --coverage 2>&1 | tee coverage.txt
-          status=${PIPESTATUS[0]}
+          bun test --coverage --coverage-reporter=text > coverage.txt 2>&1
+          status=$?
+          cat coverage.txt
           echo "coverage exit code: $status"
+          echo "GOAT_COVERAGE_EXIT_CODE=$status" >> "$GITHUB_ENV"
       - name: Enforce aggregate coverage
         run: bun scripts/coverage-check.ts coverage.txt
       - name: Create candidate tarball
