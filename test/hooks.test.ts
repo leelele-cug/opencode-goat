@@ -5,12 +5,16 @@ import { createHooks } from "../src/opencode/hooks.js";
 import { openDatabase } from "../src/store/database.js";
 import { initializeSchema } from "../src/store/schema.js";
 import { Store } from "../src/store/store.js";
+import { buildSnapshot } from "../src/core/workspace.js";
 
-const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
+const platform = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+const projectDirectory = platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+const worktreeDirectory = platform === "win32" ? "C:\\Project\\wt" : "/tmp/goat-project/wt";
+const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function identity(overrides: Partial<SessionIdentity> = {}): SessionIdentity {
-  return { id: "root-session", title: "root", projectID: "project-1", workspaceID: null, parentID: null, directory: "c:\\project", agent: "goat-formulator", model, metadata: null, ...overrides };
+  return { id: "root-session", title: "root", projectID: "project-1", workspaceID: null, parentID: null, directory: projectDirectory, agent: "goat-formulator", model, metadata: null, ...overrides };
 }
 
 function createRuntime() {
@@ -31,12 +35,12 @@ function createRuntime() {
   const workspace: WorkspacePort = {
     probeGit: async () => ({ isGit: true, isClean: true }),
     listWorktrees: async () => [],
-    createWorktree: async () => ({ path: "C:\\Project\\wt", waitUntilReady: async () => undefined }),
+    createWorktree: async () => ({ path: worktreeDirectory, waitUntilReady: async () => undefined }),
     captureSnapshot: async () => ({ ok: true, snapshot: buildSnapshotStub() }),
   };
   const question: QuestionPort = { list: async () => [], reject: async () => undefined };
-  const scope = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
-  const orchestrator = new Orchestrator(store, session, workspace, question, scope.projectId, undefined, "linux");
+  const scope = origin;
+  const orchestrator = new Orchestrator(store, session, workspace, question, scope.projectId, undefined, platform);
   const registry = { ids: async () => ["goat_state", "goat_contract_propose", "goat_evidence_record", "goat_completion_propose", "goat_block", "goat_verifier_report"] };
   let configRegistered = 0;
   const hooks = createHooks(orchestrator, session, registry, origin, () => { configRegistered += 1; });
@@ -44,8 +48,7 @@ function createRuntime() {
 }
 
 function buildSnapshotStub() {
-  const { buildSnapshot } = require("../src/core/workspace.ts") as typeof import("../src/core/workspace.js");
-  return buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], rawDiff: "", platform: "linux" });
+  return buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], rawDiff: "", platform });
 }
 
 test("config registers Goat agents once and the /goat command", async () => {
@@ -80,7 +83,7 @@ test("the before-hook binds the exact approval Question and denies mismatches", 
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
-      { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: "C:\\Project", worktree: "C:\\Project" },
+      { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
       { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks",
     );
@@ -100,7 +103,7 @@ test("the after-hook resolves approval and activates the Goal", async () => {
     if (!created.ok) throw new Error(created.error);
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
-      { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: "C:\\Project", worktree: "C:\\Project" },
+      { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
       { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks-2",
     );

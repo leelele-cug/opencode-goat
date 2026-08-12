@@ -5,7 +5,9 @@ import { Store } from "../src/store/store.js";
 import { buildSnapshot, type WorkspaceSnapshot } from "../src/core/workspace.js";
 
 const readyGateFacts = { outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] } as const;
-const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
+const platform = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+const projectDirectory = platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function freshStore(now = "2026-08-01T00:00:00.000Z") {
@@ -18,7 +20,7 @@ function freshStore(now = "2026-08-01T00:00:00.000Z") {
 }
 
 function snapshot(commit = "a".repeat(40)): WorkspaceSnapshot {
-  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], rawDiff: "", platform: "linux" });
+  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], rawDiff: "", platform });
 }
 
 function createProposedApproved(store: Store, workspace: "current" | "worktree" = "current"): { goalId: string; token: number; runId: string; dispatchId: string } {
@@ -155,12 +157,12 @@ test("a mutation under a stale fencing token fails even for the same instance", 
   try {
     const { goalId, token, runId } = createProposedApproved(store);
     advance(11 * 60 * 1000);
-    expect(store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project").ok).toBe(false);
+    expect(store.recordWorkspacePrepared(goalId, token, runId, projectDirectory).ok).toBe(false);
     const reacquired = store.acquireLease(goalId);
     if (!reacquired.ok) throw new Error(reacquired.error);
     expect(reacquired.fencingToken).toBeGreaterThan(token);
-    expect(store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project").ok).toBe(false);
-    expect(store.recordWorkspacePrepared(goalId, reacquired.fencingToken, runId, "C:\\Project").ok).toBe(true);
+    expect(store.recordWorkspacePrepared(goalId, token, runId, projectDirectory).ok).toBe(false);
+    expect(store.recordWorkspacePrepared(goalId, reacquired.fencingToken, runId, projectDirectory).ok).toBe(true);
   } finally { db.close(); }
 });
 
@@ -218,7 +220,7 @@ test("completion blocks on unexplained workspace changes", () => {
   const { db, store } = freshStore();
   try {
     const { goalId, token, runId } = createProposedApproved(store);
-    store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project");
+    store.recordWorkspacePrepared(goalId, token, runId, projectDirectory);
     store.activateRun(goalId, token, runId, snapshot());
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     const evidence = store.recordEvidence(goalId, token, runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: "executor-session" }, "evidence-key-1");
@@ -229,7 +231,7 @@ test("completion blocks on unexplained workspace changes", () => {
       diff: [{ path: "src/other.ts", status: "modified", additions: 1, deletions: 1, patch: "user-change" }],
       untracked: [],
       rawDiff: "",
-      platform: "linux",
+      platform,
     });
     expect(store.beginFinalization(goalId, token, runId).ok).toBe(true);
     const completion = store.proposeCompletion(goalId, token, runId, finalState, [], "completion-key-1");
@@ -244,7 +246,7 @@ test("pause supersedes dispatches, resume requires an attributable workspace", (
   const { db, store } = freshStore();
   try {
     const { goalId, token, runId, dispatchId } = createProposedApproved(store);
-    store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project");
+    store.recordWorkspacePrepared(goalId, token, runId, projectDirectory);
     store.activateRun(goalId, token, runId, snapshot());
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     const checkpoint = snapshot();
@@ -266,7 +268,7 @@ test("pause supersedes dispatches, resume requires an attributable workspace", (
       diff: [{ path: "x.ts", status: "added", additions: 1, deletions: 0, patch: "foreign" }],
       untracked: [],
       rawDiff: "",
-      platform: "linux",
+      platform,
     });
     expect(store.resumeAndDispatch(goalId, token, runId, foreign, []).ok).toBe(false);
     expect(store.getGoal(goalId)?.state).toBe("BLOCKED");
@@ -302,7 +304,7 @@ test("session bindings are strict and historical executor sessions are rejected"
     const { goalId, token, runId } = createProposedApproved(store);
     expect(store.getSessionBinding("root-session")).toMatchObject({ role: "root", goal: { goalId } });
     expect(store.getSessionBinding("unrelated-session")).toBeUndefined();
-    store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project");
+    store.recordWorkspacePrepared(goalId, token, runId, projectDirectory);
     store.activateRun(goalId, token, runId, snapshot());
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     expect(store.getSessionBinding("executor-session")).toMatchObject({ role: "executor", goal: { goalId }, run: { runId } });
@@ -317,7 +319,7 @@ test("dispatch payload tampering is rejected during delivery validation", () => 
   const { db, store } = freshStore();
   try {
     const { goalId, token, runId } = createProposedApproved(store);
-    store.recordWorkspacePrepared(goalId, token, runId, "C:\\Project");
+    store.recordWorkspacePrepared(goalId, token, runId, projectDirectory);
     store.activateRun(goalId, token, runId, snapshot());
     store.bindExecutorSession(goalId, token, runId, "executor-session", { projectId: "project-1", workspaceId: null }, model);
     const dispatch = store.getDispatch(store.getRun(goalId)!.runId === runId ? store.listPendingDispatches(goalId)[0]!.dispatchId : "");

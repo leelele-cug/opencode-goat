@@ -2,13 +2,15 @@ import { expect, test } from "bun:test";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { operationKey, toolContext } from "../src/tools/deps.js";
 
+const projectDirectory = process.platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+
 function context(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     sessionID: "root-session",
     messageID: "message-1",
     agent: "goat-formulator",
-    directory: "C:\\Project",
-    worktree: "C:\\Project",
+    directory: projectDirectory,
+    worktree: projectDirectory,
     abort: new AbortController().signal,
     metadata: () => undefined,
     ask: async () => undefined,
@@ -23,8 +25,8 @@ test("tool contexts carry the exact tool ID and stable operation keys", () => {
     sessionID: "root-session",
     messageID: "message-1",
     agent: "goat-formulator",
-    directory: "C:\\Project",
-    worktree: "C:\\Project",
+    directory: projectDirectory,
+    worktree: projectDirectory,
   });
   expect(operationKey("goat_evidence_record", context())).toBe("goat_evidence_record:message-1");
   expect(operationKey("goat_evidence_record", context(), "criterion-a")).toBe("goat_evidence_record:message-1:criterion-a");

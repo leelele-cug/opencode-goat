@@ -6,8 +6,10 @@ import { ProcessContext, type GoalOrigin } from "../src/runtime/process-context.
 import { Orchestrator } from "../src/runtime/orchestrator.js";
 import type { QuestionPort, SessionPort, WorkspacePort } from "../src/core/ports.js";
 
-const scope: GoalOrigin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "C:\\Project", worktreeOrigin: "C:\\Project" };
-const home = "C:\\data\\goat";
+const platform = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+const projectDirectory = platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+const scope: GoalOrigin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
+const home = platform === "win32" ? "C:\\data\\goat" : "/tmp/goat-data";
 
 const sessionStub: SessionPort = {
   get: async (id, directory) => ({ id, title: null, projectID: "project-1", workspaceID: null, parentID: null, directory, agent: null, model: null, metadata: null }),
@@ -34,7 +36,7 @@ function createContext() {
   initializeSchema(db);
   let sequence = 0;
   const store = new Store(db, { now: () => new Date() }, { next: () => `id-${++sequence}` }, "instance-test");
-  const orchestrator = new Orchestrator(store, sessionStub, workspaceStub, questionStub, scope.projectId, undefined, "linux");
+  const orchestrator = new Orchestrator(store, sessionStub, workspaceStub, questionStub, scope.projectId, undefined, platform);
   const context = ProcessContext.create({ projectId: scope.projectId, instanceId: "instance-test", db, store, orchestrator, releaseOwnedLeases: () => store.releaseOwnedLeases() });
   ProcessContext.register(context, home);
   return { db, store, context };

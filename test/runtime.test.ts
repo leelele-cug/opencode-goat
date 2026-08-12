@@ -6,15 +6,16 @@ import { initializeSchema } from "../src/store/schema.js";
 import { Store } from "../src/store/store.js";
 import { buildSnapshot, type WorkspaceSnapshot } from "../src/core/workspace.js";
 
-const projectDirectory = process.platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
-const worktreeDirectory = process.platform === "win32" ? "C:\\Project\\goat-worktree" : "/tmp/goat-project/goat-worktree";
-const persistedProjectDirectory = process.platform === "win32" ? projectDirectory.toLowerCase() : projectDirectory;
-const persistedWorktreeDirectory = process.platform === "win32" ? worktreeDirectory.toLowerCase() : worktreeDirectory;
+const platform = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+const projectDirectory = platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
+const worktreeDirectory = platform === "win32" ? "C:\\Project\\goat-worktree" : "/tmp/goat-project/goat-worktree";
+const persistedProjectDirectory = platform === "win32" ? projectDirectory.toLowerCase() : projectDirectory;
+const persistedWorktreeDirectory = platform === "win32" ? worktreeDirectory.toLowerCase() : worktreeDirectory;
 const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function snapshot(commit = "a".repeat(40)): WorkspaceSnapshot {
-  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], rawDiff: "", platform: "linux" });
+  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], rawDiff: "", platform });
 }
 
 type Fakes = {
