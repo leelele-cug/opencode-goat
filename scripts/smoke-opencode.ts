@@ -401,4 +401,11 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  const message = safeString(error).slice(-4_000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  process.stderr.write(`smoke failure: ${message}\n`);
+  if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=OpenCode smoke::${message}\n`);
+  process.exitCode = 1;
+}
