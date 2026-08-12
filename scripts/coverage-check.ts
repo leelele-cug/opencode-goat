@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 
 const minimumLines = 85;
 const stripAnsi = (value: string): string => value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
-const result = spawnSync("bun", ["test", "--coverage", "--coverage-reporter=text"], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const result = spawnSync("bun test --coverage --coverage-reporter=text", { cwd: process.cwd(), encoding: "utf8", shell: true, stdio: ["ignore", "pipe", "pipe"] });
 const output = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}\n${result.error?.message ?? ""}`);
 const exitCode = result.status ?? 1;
 process.stdout.write(output);
