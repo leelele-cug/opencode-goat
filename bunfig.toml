@@ -1,0 +1,5 @@
+[test]
+# Goat enforces its aggregate line-coverage gate in scripts/coverage-check.ts.
+# Disable Bun's platform-sensitive per-file/default threshold so the same gate
+# is applied consistently on Windows, Linux, and macOS.
+coverageThreshold = 0
