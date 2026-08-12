@@ -80,6 +80,9 @@ export const BlockerCodeSchema = z.enum([
   "executor-session-mismatch",
   "verifier-session-mismatch",
   "dispatch-identity-mismatch",
+  "executor-session-ended",
+  "verifier-session-ended",
+  "session-error",
   "executor-blocked",
   "user-blocked",
 ]);

@@ -8,7 +8,6 @@ import { buildSnapshot, canonicalizeDiff, canonicalizeStatus, MAX_WORKSPACE_FILE
 
 type InjectedClient = PluginInput["client"];
 type V2Client = V2OpencodeClient;
-
 function unwrap<T>(value: unknown): T {
   if (!value || typeof value !== "object") return value as T;
   const result = value as { data?: T; error?: unknown; response?: Response };
@@ -23,10 +22,10 @@ function unwrap<T>(value: unknown): T {
 
 function injectedTransport(client: InjectedClient): object {
   const transport = (client as unknown as { _client?: unknown })._client;
-  if (!transport || typeof transport !== "object") throw new Error("OpenCode 1.18.11 compatibility check failed. Injected SDK transport is unavailable.");
+   if (!transport || typeof transport !== "object") throw new Error("OpenCode compatibility check failed: injected SDK transport is unavailable.");
   const value = transport as Record<string, unknown>;
   for (const method of ["get", "post", "patch", "delete", "buildUrl", "getConfig"] as const) {
-    if (typeof value[method] !== "function") throw new Error(`OpenCode 1.18.11 compatibility check failed. Injected transport is missing ${method}.`);
+     if (typeof value[method] !== "function") throw new Error(`OpenCode compatibility check failed: injected transport is missing ${method}.`);
   }
   return transport;
 }
@@ -47,14 +46,13 @@ export function createOpenCodeAdapters(input: Pick<PluginInput, "client" | "serv
     ["v2.tool.ids", v2.tool.ids],
     ["v2.worktree.list", v2.worktree.list],
     ["v2.worktree.create", v2.worktree.create],
-    ["v2.worktree.remove", v2.worktree.remove],
     ["v2.vcs.status", v2.vcs.status],
     ["v2.vcs.diff", v2.vcs.diff],
     ["v2.question.list", v2.question.list],
     ["v2.question.reject", v2.question.reject],
   ];
   const missing = required.filter(([, value]) => typeof value !== "function").map(([name]) => name);
-  if (missing.length > 0) throw new Error(`OpenCode 1.18.11 compatibility check failed. Missing: ${missing.join(", ")}.`);
+   if (missing.length > 0) throw new Error(`OpenCode compatibility check failed: missing ${missing.join(", ")}.`);
   return {
     session: createSessionAdapter(v2, platform),
     workspace: createWorkspaceAdapter(v2, input.$, platform),
@@ -66,7 +64,7 @@ export function createOpenCodeAdapters(input: Pick<PluginInput, "client" | "serv
       reject: async (requestId, directory) => { unwrap(await v2.question.reject({ requestID: requestId, directory })); },
     },
     registry: { ids: async (directory) => unwrap<string[]>(await v2.tool.ids({ directory })) },
-    toast: { show: async (toast) => { unwrap(await input.client.tui.showToast({ query: { directory: input.directory }, body: toast })); } },
+     toast: { show: async (toast) => { const { directory, ...body } = toast; unwrap(await input.client.tui.showToast({ query: { directory: directory ?? input.directory }, body })); } },
   };
 }
 
@@ -167,11 +165,6 @@ function createWorkspaceAdapter(client: V2Client, shell: PluginInput["$"], platf
           throw new Error("native-worktree-readiness-timeout");
         },
       };
-    },
-      removeWorktree: async (projectDirectory, path) => {
-      const status = await shell`git status --porcelain=v1`.cwd(path).quiet().nothrow();
-      if (status.exitCode !== 0 || status.text().trim().length > 0) throw new Error("cancelled-worktree-is-not-clean");
-        unwrap(await client.worktree.remove({ directory: projectDirectory, worktreeRemoveInput: { directory: path } }));
     },
     captureSnapshot: async (cwd) => {
       try {

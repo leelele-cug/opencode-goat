@@ -13,7 +13,15 @@ export function createContractProposeTool(orchestrator: Orchestrator): ToolDefin
       constraints: z.array(z.string().min(1)),
       assumptions: z.array(z.string().min(1)),
       workspace: z.enum(["current", "worktree"]),
-      criteria: z.array(z.object({ id: z.string().min(1), priority: z.enum(["must", "should"]), description: z.string().min(1), verificationMethod: z.string().min(1) }).strict()).min(1),
+      criteria: z.array(z.object({
+        id: z.string().min(1),
+        priority: z.enum(["must", "should"]),
+        description: z.string().min(1),
+        verification: z.array(z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("inspection"), description: z.string().min(1) }).strict(),
+          z.object({ kind: z.literal("command"), command: z.string().min(1) }).strict(),
+        ])).min(1),
+      }).strict()).min(1),
       outcomeObservable: z.boolean(),
       constraintsReviewed: z.boolean(),
       assumptionsReviewed: z.boolean(),
@@ -35,6 +43,6 @@ export function createContractProposeTool(orchestrator: Orchestrator): ToolDefin
       outcomeChangingQuestionsResolved: args.outcomeChangingQuestionsResolved,
       workspaceAvailable: args.workspaceAvailable,
       infeasibleCriterionIds: args.infeasibleCriterionIds,
-    }, operationKey("goat_contract_propose", context)); },
+    }, operationKey("goat_contract_propose", context, "", args)); },
   });
 }

@@ -81,7 +81,7 @@ export function deriveVerificationOutcome(
   }
 
   const mustFindings = normalized.filter((finding) => knownCriteria.get(finding.criterionId)?.priority === "must");
-  if (mustFindings.some((finding) => finding.result === "blocked")) return { ok: true, outcome: "BLOCKED", findings: normalized, missingMustCriterionIds };
+  if (mustFindings.some((finding) => finding.result === "blocked")) return { ok: true, outcome: attempt >= automaticAttemptLimit ? "BLOCKED" : "ACTIVE", findings: normalized, missingMustCriterionIds };
   if (mustFindings.some((finding) => finding.result === "fail")) return { ok: true, outcome: attempt >= automaticAttemptLimit ? "BLOCKED" : "ACTIVE", findings: normalized, missingMustCriterionIds };
   return { ok: true, outcome: "COMPLETED", findings: normalized, missingMustCriterionIds };
 }

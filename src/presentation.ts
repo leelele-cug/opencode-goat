@@ -39,7 +39,8 @@ export function renderDetailed(model: StatusReadModel): string {
       return `- [${criterion.priority.toUpperCase()}] ${criterion.description}: ${records.length ? `${records.length} evidence record(s)` : "no evidence"}`;
     }),
     "",
-    `Verification attempts: ${Math.min(model.results.length, DEFAULT_MAX_VERIFICATION_ATTEMPTS)}/${DEFAULT_MAX_VERIFICATION_ATTEMPTS}${model.results.length > DEFAULT_MAX_VERIFICATION_ATTEMPTS ? ` + ${model.results.length - DEFAULT_MAX_VERIFICATION_ATTEMPTS} authorized` : ""}`,
+    `Verification: batch ${run?.verificationBatch ?? 1}, round ${run?.verificationAttempts ? ((run.verificationAttempts - 1) % DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1 : 0}/${DEFAULT_MAX_VERIFICATION_ATTEMPTS}, total ${run?.verificationAttempts ?? 0}`,
+    `Run status: ${run?.status ?? "not active"}`,
     ...model.results.map((result) => `- Attempt ${result.attempt}: ${result.outcome}`),
     "",
     "Recent activity:",
@@ -80,7 +81,21 @@ export function renderCompleted(model: StatusReadModel): string {
 }
 
 export function renderHelp(): string {
-  return "Usage: /goat <intent>, /goat status, /goat pause, /goat resume, /goat revise <change>, /goat cancel, /goat help";
+  return "Usage: /goat <intent>, /goat status, /goat doctor, /goat pause, /goat resume, /goat revise <change>, /goat cancel, /goat help";
+}
+
+export function renderDoctor(status: { readonly schemaVersion: number; readonly projectDirectory: string; readonly worktreeOrigin: string; readonly git: { readonly isGit: boolean; readonly isClean: boolean }; readonly binding: unknown }): string {
+  return [
+    "Goat doctor",
+    `Schema: v${status.schemaVersion}`,
+    "Permission boundary: OpenCode native permissions remain authoritative",
+    "Workspace cleanup: preserved; Goat does not remove worktrees automatically",
+    `Project directory: ${status.projectDirectory}`,
+    `Worktree origin: ${status.worktreeOrigin}`,
+    `Git: ${status.git.isGit ? status.git.isClean ? "ready and clean" : "ready but dirty" : "not a Git workspace"}`,
+    `Session binding: ${status.binding ? "available" : "none"}`,
+    status.binding ? "Next: run /goat status to inspect the bound Goal." : "Next: run /goat <intent> from a root Session.",
+  ].join("\n");
 }
 
 function waitingReason(goal: { state: string; blocker: string | null }): string {
@@ -95,7 +110,7 @@ function titleCase(value: string): string { return value.charAt(0) + value.slice
 function nextAction(state: string): string {
   return state === "FORMING" ? "Formulator is discovering"
     : state === "AWAITING_APPROVAL" ? "Approve, revise, or cancel the Contract"
-      : state === "ACTIVE" ? "Executor is working"
+       : state === "ACTIVE" ? "Executor is working"
         : state === "VERIFYING" ? "Independent verification is running"
           : state === "PAUSED" ? "Resume when ready"
             : state === "BLOCKED" ? "Resolve the blocker and resume"

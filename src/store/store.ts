@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { normalize, resolve } from "node:path";
+import { normalize, parse, resolve } from "node:path";
 import { openCodeMessageId, type Clock, type IDGenerator, type SessionModel } from "../core/ports.js";
 import { assertTransition, DEFAULT_MAX_VERIFICATION_ATTEMPTS, type GoalState, type RunStatus, isTerminal } from "../core/state.js";
-import { AcceptanceCriterionSchema, ContractBodySchema, computeRevisionHash, evaluateReadiness, formatContractApprovalSummary, type AcceptanceCriterion, type ContractBody, type GoalRevision, type ReadyGateFacts } from "../core/contract.js";
+import { AcceptanceCriterionSchema, ContractBodySchema, VerificationStepSchema, computeRevisionHash, evaluateReadiness, formatContractApprovalSummary, type AcceptanceCriterion, type ContractBody, type GoalRevision, type ReadyGateFacts } from "../core/contract.js";
 import { EvidenceSchema, VerificationFindingSchema, checkCompletionCoverage, deriveVerificationOutcome, type Evidence, type VerificationFinding } from "../core/evidence.js";
 import { canonicalHash, canonicalJson } from "../core/canonical.js";
 import { redact } from "../core/redaction.js";
 import { createApprovalQuestion, mapApprovalAnswers, NativeApprovalQuestionSchema, type ApprovalResponseMap, type NativeApprovalQuestion } from "../core/question.js";
-import { WorkspaceSnapshotSchema, assertExecutorOwnsSnapshot, assertSnapshotUnchanged, isWorkspaceClean, type CanonicalDiffEntry, type WorkspaceSnapshot } from "../core/workspace.js";
+import { CanonicalDiffEntrySchema, WorkspaceSnapshotSchema, assertExecutorOwnsSnapshot, assertSnapshotUnchanged, isWorkspaceClean, type CanonicalDiffEntry, type WorkspaceSnapshot } from "../core/workspace.js";
 import type { BlockerCode } from "../core/errors.js";
 import type { DatabaseConnection } from "./database.js";
 
@@ -72,7 +72,7 @@ export type RunView = {
   model: SessionModel | null;
   status: RunStatus;
   verificationAttempts: number;
-  extraVerificationAuthorized: boolean;
+  verificationBatch: number;
   preparationRetryRequested: boolean;
   rowVersion: number;
 };
@@ -99,7 +99,7 @@ export type VerificationResultView = {
   verifierSessionId: string | null;
   verifierSessionKey: string | null;
   findings: readonly VerificationFinding[];
-  outcome: "PENDING" | "PASS" | "FAIL" | "BLOCKED";
+  outcome: "PENDING" | "PASS" | "FAIL" | "ERROR" | "BLOCKED";
   createdAt: string;
   finalizedAt: string | null;
 };
@@ -109,9 +109,6 @@ export type SessionBinding =
   | { readonly role: "executor"; readonly goal: GoalView; readonly run: RunView }
   | { readonly role: "verifier"; readonly goal: GoalView; readonly run: RunView; readonly result: VerificationResultView }
   | { readonly role: "revoked"; readonly revokedRole: "executor" | "verifier"; readonly goal: GoalView; readonly run: RunView };
-export type WorktreeCleanupCandidate = {
-  goalId: string; runId: string; projectDirectory: string; worktreeName: string; workspacePath: string;
-};
 export type { VerificationFinding } from "../core/evidence.js";
 
 type Lease = { fencing_token: number; holder_instance_id: string | null; expires_at: string | null };
@@ -133,10 +130,10 @@ export class Store {
     return row ? toGoal(row) : undefined;
   }
 
-  getLatestGoalForRootSession(sessionId: string): GoalView | undefined {
+  getLatestGoalForRootSession(sessionId: string, projectId: string): GoalView | undefined {
     const row = this.db.queryOne<Record<string, unknown>>(
-      "SELECT * FROM goals WHERE root_session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-      sessionId,
+      "SELECT * FROM goals WHERE root_session_id=? AND project_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      sessionId, projectId,
     );
     return row ? toGoal(row) : undefined;
   }
@@ -161,9 +158,38 @@ export class Store {
     }
     if (binding.role === "verifier" && goal.state === "VERIFYING" && run.status === "VERIFYING") {
       const verifier = this.db.queryOne<Record<string, unknown>>(
-        "SELECT * FROM verification_results WHERE run_id = ? AND verifier_session_id = ? ORDER BY attempt DESC LIMIT 1",
+        "SELECT * FROM verification_results WHERE run_id = ? AND verifier_session_id = ? AND attempt = ? AND outcome = 'PENDING' LIMIT 1",
         run.runId,
         sessionId,
+        run.verificationAttempts,
+      );
+      if (verifier) return { role: "verifier", goal, run, result: toVerificationResult(verifier) };
+    }
+    return { role: "revoked", revokedRole: binding.role, goal, run };
+  }
+
+  getSessionBindingForProject(sessionId: string, projectId: string): SessionBinding | undefined {
+    const root = this.db.queryOne<Record<string, unknown>>(
+      "SELECT * FROM goals WHERE root_session_id = ? AND project_id = ? AND state IN ('FORMING','AWAITING_APPROVAL','ACTIVE','VERIFYING','PAUSED','BLOCKED') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      sessionId, projectId,
+    );
+    if (root) return { role: "root", goal: toGoal(root) };
+    const binding = this.db.queryOne<{ role: "executor" | "verifier"; status: "ACTIVE" | "REVOKED"; goal_id: string; run_id: string }>(
+      "SELECT b.role,b.status,b.goal_id,b.run_id FROM session_bindings b JOIN goals g ON g.goal_id=b.goal_id WHERE b.session_id = ? AND g.project_id = ?",
+      sessionId, projectId,
+    );
+    if (!binding) return undefined;
+    const goal = this.getGoal(binding.goal_id);
+    const run = this.getRunById(binding.run_id);
+    if (!goal || !run) return undefined;
+    if (binding.status === "REVOKED") return { role: "revoked", revokedRole: binding.role, goal, run };
+    if (binding.role === "executor" && goal.currentRunId === run.runId && ["ACTIVE", "VERIFYING", "PAUSED", "BLOCKED"].includes(run.status) && run.executorSessionId === sessionId) {
+      return { role: "executor", goal, run };
+    }
+    if (binding.role === "verifier" && goal.state === "VERIFYING" && run.status === "VERIFYING") {
+      const verifier = this.db.queryOne<Record<string, unknown>>(
+        "SELECT * FROM verification_results WHERE run_id = ? AND verifier_session_id = ? AND attempt = ? AND outcome = 'PENDING' LIMIT 1",
+        run.runId, sessionId, run.verificationAttempts,
       );
       if (verifier) return { role: "verifier", goal, run, result: toVerificationResult(verifier) };
     }
@@ -184,7 +210,10 @@ export class Store {
     const rows = revision === undefined
       ? this.db.query<Record<string, unknown>>("SELECT * FROM acceptance_criteria WHERE goal_id = ? ORDER BY revision, criterion_id", goalId)
       : this.db.query<Record<string, unknown>>("SELECT * FROM acceptance_criteria WHERE goal_id = ? AND revision = ? ORDER BY criterion_id", goalId, revision);
-    return rows.map((row) => ({ id: String(row.criterion_id), criterionId: String(row.criterion_id), priority: row.priority as "must" | "should", description: String(row.description), verificationMethod: String(row.verification_method), goalId: String(row.goal_id), revision: Number(row.revision) }));
+    return rows.map((row) => {
+      const verification = z.array(VerificationStepSchema).parse(JSON.parse(String(row.verification_json)));
+      return { id: String(row.criterion_id), criterionId: String(row.criterion_id), priority: row.priority as "must" | "should", description: String(row.description), verification, goalId: String(row.goal_id), revision: Number(row.revision) };
+    });
   }
 
   getEvidence(goalId: string, runId?: string): EvidenceView[] {
@@ -200,7 +229,8 @@ export class Store {
   }
 
   getCurrentRun(goalId: string): RunView | undefined {
-    return this.getRun(goalId);
+    const goal = this.getGoal(goalId);
+    return goal?.currentRunId ? this.getRunById(goal.currentRunId) : undefined;
   }
 
   getRunById(runId: string): RunView | undefined {
@@ -237,6 +267,11 @@ export class Store {
     return row ? toDispatch(row) : undefined;
   }
 
+  getDispatchForSession(sessionId: string): DispatchView | undefined {
+    const row = this.db.queryOne<Record<string, unknown>>("SELECT * FROM dispatches WHERE target_session_id=? AND status IN ('PENDING','SENT','STARTED') ORDER BY created_at DESC, rowid DESC LIMIT 1", sessionId);
+    return row ? toDispatch(row) : undefined;
+  }
+
   listPendingDispatches(goalId?: string): DispatchView[] {
     const rows = goalId === undefined
       ? this.db.query<Record<string, unknown>>("SELECT * FROM dispatches WHERE status IN ('PENDING','SENT','STARTED') ORDER BY created_at, rowid")
@@ -244,16 +279,8 @@ export class Store {
     return rows.map(toDispatch);
   }
 
-  listRecoverableGoals(projectId: string): GoalView[] {
+  listRecoverableGoalsForProject(projectId: string): GoalView[] {
     return this.db.query<Record<string, unknown>>("SELECT * FROM goals WHERE project_id=? AND state IN ('FORMING','AWAITING_APPROVAL','ACTIVE','VERIFYING','PAUSED','BLOCKED') ORDER BY created_at", projectId).map(toGoal);
-  }
-
-  listCancelledWorktreeCleanupGoals(projectId: string): GoalView[] {
-     return this.db.query<Record<string, unknown>>("SELECT DISTINCT g.* FROM goals g JOIN runs r ON r.goal_id=g.goal_id WHERE g.project_id=? AND g.state IN ('CANCELLED','FORMING') AND r.status='CANCELLED' AND r.workspace_strategy='worktree' AND r.worktree_name IS NOT NULL AND r.workspace_path IS NOT NULL ORDER BY g.created_at", projectId).map(toGoal);
-  }
-
-  getCancelledWorktreeCleanupCandidates(goalId: string): WorktreeCleanupCandidate[] {
-     return this.db.query<Record<string, unknown>>("SELECT g.goal_id,g.project_directory,r.run_id,r.worktree_name,r.workspace_path FROM goals g JOIN runs r ON r.goal_id=g.goal_id WHERE g.goal_id=? AND g.state IN ('CANCELLED','FORMING') AND r.status='CANCELLED' AND r.workspace_strategy='worktree' AND r.worktree_name IS NOT NULL AND r.workspace_path IS NOT NULL ORDER BY r.created_at", goalId).map((row) => ({ goalId: String(row.goal_id), runId: String(row.run_id), projectDirectory: String(row.project_directory), worktreeName: String(row.worktree_name), workspacePath: String(row.workspace_path) }));
   }
 
   getFormulatorState(goalId: string): unknown {
@@ -274,7 +301,7 @@ export class Store {
 
   getExecutorState(goalId: string): unknown {
     const goal = this.getGoal(goalId);
-    const run = this.getRun(goalId);
+    const run = this.getCurrentRun(goalId);
     const revision = goal?.currentRevision === null || goal?.currentRevision === undefined ? undefined : this.getRevision(goalId, goal.currentRevision);
     const evidence = run ? this.getEvidence(goalId, run.runId) : [];
     const results = run ? this.getVerificationResults(run.runId) : [];
@@ -286,7 +313,8 @@ export class Store {
       evidenceCoverage: revision ? revision.criteria.map((criterion) => ({ criterionId: criterion.id, count: evidence.filter((item) => item.criterionId === criterion.id).length })) : [],
       latestFindings: results.at(-1)?.findings ?? [],
       verificationAttempt: run?.verificationAttempts ?? 0,
-      maxVerificationAttempts: DEFAULT_MAX_VERIFICATION_ATTEMPTS,
+       maxVerificationAttempts: DEFAULT_MAX_VERIFICATION_ATTEMPTS,
+       verificationBatch: run?.verificationBatch ?? 1,
       blockerCode: goal?.blockerCode ?? null,
       blocker: goal?.blocker ?? null,
     };
@@ -294,7 +322,7 @@ export class Store {
 
   getVerifierState(goalId: string): unknown {
     const goal = this.getGoal(goalId);
-    const run = this.getRun(goalId);
+    const run = this.getCurrentRun(goalId);
     const revision = goal?.currentRevision === null || goal?.currentRevision === undefined ? undefined : this.getRevision(goalId, goal.currentRevision);
     const results = run ? this.getVerificationResults(run.runId) : [];
     return {
@@ -303,7 +331,8 @@ export class Store {
       evidence: run ? this.getEvidence(goalId, run.runId) : [],
       workspace: run ? { strategy: run.workspaceStrategy, path: run.workspacePath, baseline: run.baseline, finalSnapshot: run.finalSnapshot, executorSessionDiff: run.executorDiff } : null,
       activeAttempt: run?.verificationAttempts ?? 0,
-      maxVerificationAttempts: DEFAULT_MAX_VERIFICATION_ATTEMPTS,
+       maxVerificationAttempts: DEFAULT_MAX_VERIFICATION_ATTEMPTS,
+       verificationBatch: run?.verificationBatch ?? 1,
       priorResults: results,
       blockerCode: goal?.blockerCode ?? null,
       blocker: goal?.blocker ?? null,
@@ -390,6 +419,7 @@ export class Store {
     }
     const readiness = evaluateReadiness(parsedBody.data, parsedCriteria.data, readyGateFacts);
     if (!readiness.ready) return { ok: true, ready: false, dimensions: readiness.dimensions };
+    if (!preflight.clean) return { ok: false, error: "workspace-dirty-before-approval" };
     const replay = this.db.queryOne<{ revision: number; hash: string; attempt_id: string; generation: number; native_question_json: string }>(
       "SELECT r.revision,r.hash,a.attempt_id,a.generation,a.native_question_json FROM contract_revisions r JOIN approval_attempts a ON a.goal_id=r.goal_id AND a.revision=r.revision AND a.contract_hash=r.hash WHERE r.goal_id=? AND r.operation_key=? ORDER BY a.generation DESC LIMIT 1",
       goalId, operationKey,
@@ -408,7 +438,7 @@ export class Store {
       if (!currentGoal || currentGoal.state !== "FORMING" || currentGoal.sourceRequest !== goal.sourceRequest) return { ok: false as const, error: "invalid-state" };
       const revision = (this.db.queryOne<{ revision: number }>("SELECT MAX(revision) AS revision FROM contract_revisions WHERE goal_id = ?", goalId)?.revision ?? -1) + 1;
       this.db.run("INSERT INTO contract_revisions(goal_id,revision,body_json,hash,operation_key,created_at) VALUES(?,?,?,?,?,?)", goalId, revision, JSON.stringify(parsedBody.data), hash, operationKey, now);
-      for (const criterion of parsedCriteria.data) this.db.run("INSERT INTO acceptance_criteria(criterion_row_id,goal_id,revision,criterion_id,priority,description,verification_method) VALUES(?,?,?,?,?,?,?)", this.ids.next(), goalId, revision, criterion.id, criterion.priority, criterion.description, criterion.verificationMethod);
+       for (const criterion of parsedCriteria.data) this.db.run("INSERT INTO acceptance_criteria(criterion_row_id,goal_id,revision,criterion_id,priority,description,verification_json) VALUES(?,?,?,?,?,?,?)", this.ids.next(), goalId, revision, criterion.id, criterion.priority, criterion.description, JSON.stringify(criterion.verification));
       const generation = (this.db.queryOne<{ generation: number }>("SELECT COALESCE(MAX(generation),0) AS generation FROM approval_attempts WHERE goal_id=?", goalId)?.generation ?? 0) + 1;
       const predecessor = this.db.queryOne<{ attempt_id: string }>("SELECT attempt_id FROM approval_attempts WHERE goal_id=? ORDER BY generation DESC LIMIT 1", goalId)?.attempt_id ?? null;
       this.db.run("INSERT INTO approval_attempts(attempt_id,goal_id,generation,predecessor_attempt_id,revision,contract_hash,root_session_id,native_request_id,call_id,native_question_json,option_mapping_json,answer_json,preflight_snapshot_json,status,expires_at,created_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", attemptId, goalId, generation, predecessor, revision, hash, currentGoal.rootSessionId, null, null, canonicalJson(createApprovalQuestion(formatContractApprovalSummary(parsedBody.data, parsedCriteria.data), generation)), JSON.stringify({ "Approve and start": "approve", Revise: "revise", Cancel: "cancel" }), null, JSON.stringify(preflight), "PENDING", new Date(this.clock.now().getTime() + 15 * 60 * 1000).toISOString(), now, null);
@@ -417,7 +447,22 @@ export class Store {
        this.audit(goalId, "contract_proposed", this.instanceId, { revision, hash, attemptId, generation }, "FORMING", "AWAITING_APPROVAL", now);
        return { ok: true as const, ready: true as const, revision, hash, attemptId, generation, nativeQuestion: createApprovalQuestion(formatContractApprovalSummary(parsedBody.data, parsedCriteria.data), generation) };
     });
-    return txn.immediate();
+     return txn.immediate();
+   }
+
+  beginFinalization(goalId: string, fencingToken: number, runId: string): Result {
+    return this.db.transaction(() => {
+      if (!this.checkFence(goalId, fencingToken)) return { ok: false as const, error: "stale-lease" };
+      const goal = this.getGoal(goalId);
+      const run = this.getRunById(runId);
+      if (!goal || !run || goal.state !== "ACTIVE" || run.runId !== runId || run.status === "FINALIZING") return run?.status === "FINALIZING" ? { ok: true as const } : { ok: false as const, error: "stale-completion-proposal" };
+      if (run.status !== "ACTIVE") return { ok: false as const, error: "stale-completion-proposal" };
+      const now = this.clock.now().toISOString();
+      this.db.run("UPDATE runs SET status='FINALIZING',row_version=row_version+1,updated_at=? WHERE run_id=? AND status='ACTIVE'", now, runId);
+      if ((this.db.queryOne<{ count: number }>("SELECT changes() AS count")?.count ?? 0) !== 1) return { ok: false as const, error: "stale-completion-proposal" };
+      this.audit(goalId, "run_finalization_started", this.instanceId, { runId }, "ACTIVE", "ACTIVE", now);
+      return { ok: true as const };
+    }).immediate();
   }
 
   bindApprovalQuestion(goalId: string, fencingToken: number, callId: string, args: unknown): { ok: true; attemptId: string } | { ok: false; error: string } {
@@ -429,6 +474,7 @@ export class Store {
       if (row.call_id === callId) return { ok: true as const, attemptId: row.attempt_id };
       this.db.run("UPDATE approval_attempts SET call_id = ? WHERE attempt_id = ? AND status = 'PENDING' AND call_id IS NULL", callId, row.attempt_id);
       if ((this.db.queryOne<{ count: number }>("SELECT changes() AS count")?.count ?? 0) !== 1) return { ok: false as const, error: "approval-already-bound" };
+      this.db.run("UPDATE dispatches SET status='COMPLETED',updated_at=? WHERE approval_attempt_id=? AND kind='approval-reissue' AND status IN ('PENDING','SENT','STARTED')", this.clock.now().toISOString(), row.attempt_id);
       this.audit(goalId, "approval_question_bound", goalId, { attemptId: row.attempt_id, callId }, undefined, undefined, this.clock.now().toISOString());
       return { ok: true as const, attemptId: row.attempt_id };
     }).immediate();
@@ -452,15 +498,16 @@ export class Store {
     const now = this.clock.now().toISOString();
     const txn = this.db.transaction(() => {
       if (!this.checkFence(goalId, fencingToken)) return { ok: false as const, error: "stale-lease" };
-       const row = this.db.queryOne<Record<string, unknown>>("SELECT * FROM approval_attempts WHERE goal_id = ? AND call_id = ? AND status = 'PENDING'", goalId, callId);
-      if (!row) return { ok: false as const, error: "approval-not-found" };
+       const row = this.db.queryOne<Record<string, unknown>>("SELECT * FROM approval_attempts WHERE goal_id = ? AND (call_id = ? OR native_request_id = ?) AND status = 'PENDING'", goalId, callId, callId);
+       if (!row) return { ok: false as const, error: "approval-not-found" };
+       const boundCallId = String(row.call_id);
       const optionMapping = JSON.parse(String(row.option_mapping_json)) as Record<string, string>;
-      const mapping: ApprovalResponseMap = {
-        approvalId: String(row.attempt_id), goalId: String(row.goal_id), revision: Number(row.revision), contractHash: String(row.contract_hash), rootSessionId: String(row.root_session_id), requestId: row.native_request_id === null ? null : String(row.native_request_id), callId: String(row.call_id), canonicalPayload: String(row.native_question_json), expiresAt: String(row.expires_at), consumed: false,
+       const mapping: ApprovalResponseMap = {
+         approvalId: String(row.attempt_id), goalId: String(row.goal_id), revision: Number(row.revision), contractHash: String(row.contract_hash), rootSessionId: String(row.root_session_id), requestId: row.native_request_id === null ? null : String(row.native_request_id), callId: boundCallId, canonicalPayload: String(row.native_question_json), expiresAt: String(row.expires_at), consumed: false,
         questions: [{ id: "contract-approval", options: [{ id: "approve", label: "Approve and start" }, { id: "revise", label: "Revise" }, { id: "cancel", label: "Cancel" }] }],
       };
       if (optionMapping["Approve and start"] !== "approve" || optionMapping.Revise !== "revise" || optionMapping.Cancel !== "cancel") return { ok: false as const, error: "approval-option-mapping-missing" };
-      const identity = { approvalId: mapping.approvalId, goalId: mapping.goalId, revision: mapping.revision, contractHash: mapping.contractHash, rootSessionId: String(row.root_session_id), requestId: mapping.requestId, callId, canonicalPayload: mapping.canonicalPayload };
+       const identity = { approvalId: mapping.approvalId, goalId: mapping.goalId, revision: mapping.revision, contractHash: mapping.contractHash, rootSessionId: String(row.root_session_id), requestId: mapping.requestId, callId: boundCallId, canonicalPayload: mapping.canonicalPayload };
       const answer = mapApprovalAnswers(mapping, identity, answerLabels, this.clock.now());
       if (!answer.ok) return { ok: false as const, error: `invalid-approval-answer:${answer.reason}` };
       const optionId = answer.optionId;
@@ -469,12 +516,14 @@ export class Store {
       if (!goal.model) return { ok: false as const, error: "model-pin-missing" };
       const answerJson = JSON.stringify({ labels: answerLabels, optionIds: [[optionId]] });
       if (optionId === "revise") {
+         this.db.run("UPDATE dispatches SET status='COMPLETED',updated_at=? WHERE approval_attempt_id=? AND kind='approval-reissue' AND status IN ('PENDING','SENT','STARTED')", now, String(row.attempt_id));
          this.db.run("UPDATE approval_attempts SET status='REVISED',answer_json=?,resolved_at=? WHERE attempt_id=?", answerJson, now, String(row.attempt_id));
         this.setState(goalId, "FORMING", now);
         this.audit(goalId, "contract_rejected_for_revision", goalId, {}, "AWAITING_APPROVAL", "FORMING", now);
         return { ok: true as const, action: "revise" as const };
       }
       if (optionId === "cancel") {
+         this.db.run("UPDATE dispatches SET status='COMPLETED',updated_at=? WHERE approval_attempt_id=? AND kind='approval-reissue' AND status IN ('PENDING','SENT','STARTED')", now, String(row.attempt_id));
          this.db.run("UPDATE approval_attempts SET status='CANCELLED',answer_json=?,resolved_at=? WHERE attempt_id=?", answerJson, now, String(row.attempt_id));
         this.setState(goalId, "CANCELLED", now);
         this.audit(goalId, "goal_cancelled", goalId, {}, "AWAITING_APPROVAL", "CANCELLED", now);
@@ -486,7 +535,7 @@ export class Store {
       const payload = { kind: "executor-initial", instruction: "Execute the exact approved Contract. Start with goat_state, record criterion evidence, then call goat_completion_propose or goat_block." };
        this.db.run("UPDATE approval_attempts SET status='APPROVED',answer_json=?,resolved_at=? WHERE attempt_id=?", answerJson, now, String(row.attempt_id));
       this.db.run("UPDATE goals SET approved_revision_hash=?,updated_at=? WHERE goal_id=?", contractHash, now, goalId);
-      this.db.run("INSERT INTO runs(run_id,goal_id,approval_attempt_id,revision,approved_revision_hash,workspace_strategy,worktree_name,workspace_path,baseline_json,checkpoint_json,final_snapshot_json,executor_diff_json,executor_session_id,executor_session_key,executor_project_id,executor_workspace_id,model_provider_id,model_id,model_variant,status,verification_attempts,extra_verification_authorized,preparation_retry_requested,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", runId, goalId, String(row.attempt_id), revision, contractHash, workspaceStrategy, workspaceStrategy === "worktree" ? `goat-${runId}` : null, null, null, null, null, null, null, runId, null, null, goal.model!.providerID, goal.model!.id, goal.model!.variant ?? null, "PREPARING", 0, 0, 0, 0, now, now);
+       this.db.run("INSERT INTO runs(run_id,goal_id,approval_attempt_id,revision,approved_revision_hash,workspace_strategy,worktree_name,workspace_path,baseline_json,checkpoint_json,final_snapshot_json,executor_diff_json,executor_session_id,executor_session_key,executor_project_id,executor_workspace_id,model_provider_id,model_id,model_variant,status,verification_attempts,verification_batch,preparation_retry_requested,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", runId, goalId, String(row.attempt_id), revision, contractHash, workspaceStrategy, workspaceStrategy === "worktree" ? `goat-${runId}` : null, null, null, null, null, null, null, runId, null, null, goal.model!.providerID, goal.model!.id, goal.model!.variant ?? null, "PREPARING", 0, 1, 0, 0, now, now);
        this.db.run("INSERT INTO dispatches(dispatch_id,goal_id,run_id,approval_attempt_id,revision,contract_hash,kind,role,verification_attempt,target_session_id,directory,message_id,payload_json,prompt_hash,status,failure_reason,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dispatchId, goalId, runId, String(row.attempt_id), revision, contractHash, "executor-initial", "executor", null, null, null, messageId, JSON.stringify(payload), canonicalHash(payload), "PENDING", null, 0, now, now);
       this.db.run("UPDATE goals SET current_run_id=?,updated_at=? WHERE goal_id=?", runId, now, goalId);
       this.audit(goalId, "dispatch_pending", this.instanceId, { dispatchId, kind: "executor-initial" }, undefined, undefined, now);
@@ -527,6 +576,7 @@ export class Store {
       const dispatchId = this.ids.next(); const messageId = openCodeMessageId(this.ids.next());
       const question = this.reissueQuestion(JSON.parse(String(attempt.native_question_json)) as { value?: unknown } | unknown, nextGeneration);
        this.db.run("UPDATE approval_attempts SET status='EXPIRED',resolved_at=? WHERE attempt_id=? AND status='PENDING'", nowIso, String(attempt.attempt_id));
+       this.db.run("UPDATE dispatches SET status='SUPERSEDED',failure_reason='approval-generation-replaced',updated_at=? WHERE approval_attempt_id=? AND kind='approval-reissue' AND status IN ('PENDING','SENT','STARTED')", nowIso, String(attempt.attempt_id));
        this.db.run("INSERT INTO approval_attempts(attempt_id,goal_id,generation,predecessor_attempt_id,revision,contract_hash,root_session_id,native_request_id,call_id,native_question_json,option_mapping_json,answer_json,preflight_snapshot_json,status,expires_at,created_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", nextAttemptId, goalId, nextGeneration, String(attempt.attempt_id), Number(attempt.revision), String(attempt.contract_hash), String(attempt.root_session_id), null, null, canonicalJson(question), String(attempt.option_mapping_json), null, String(attempt.preflight_snapshot_json), "PENDING", new Date(now.getTime() + 15 * 60 * 1000).toISOString(), nowIso, null);
       const payload = { kind: "approval-reissue", nativeQuestion: question };
        this.db.run("INSERT INTO dispatches(dispatch_id,goal_id,run_id,approval_attempt_id,revision,contract_hash,kind,role,verification_attempt,target_session_id,directory,message_id,payload_json,prompt_hash,status,failure_reason,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dispatchId, goalId, null, nextAttemptId, Number(attempt.revision), String(attempt.contract_hash), "approval-reissue", "formulator", null, String(attempt.root_session_id), goal.projectDirectory, messageId, JSON.stringify(payload), canonicalHash(payload), "PENDING", null, 0, nowIso, nowIso);
@@ -614,7 +664,7 @@ export class Store {
       const retriedPreparation = goal?.state === "BLOCKED" && run?.status === "BLOCKED" && run.preparationRetryRequested;
       if (!goal || !run || run.runId !== runId || (!initialPreparation && !retriedPreparation)) return { ok: false as const, error: "run-not-preparing" };
       const safeReason = diagnosticReason(reason);
-      this.db.run("UPDATE runs SET status='BLOCKED',preparation_retry_requested=CASE WHEN workspace_path IS NULL THEN 0 ELSE 1 END,row_version=row_version+1,updated_at=? WHERE run_id=?", now, runId);
+       this.db.run("UPDATE runs SET status='BLOCKED',preparation_retry_requested=0,row_version=row_version+1,updated_at=? WHERE run_id=?", now, runId);
       this.db.run("UPDATE dispatches SET status='FAILED',failure_reason=?,updated_at=? WHERE run_id=? AND kind='executor-initial' AND status IN ('PENDING','SENT','STARTED')", safeReason, now, runId);
       this.db.run("UPDATE goals SET blocker_code=?,blocker=?,updated_at=? WHERE goal_id=?", code, safeReason, now, goalId);
       if (initialPreparation) this.setState(goalId, "BLOCKED", now);
@@ -685,12 +735,13 @@ export class Store {
     const result = this.db.transaction(() => {
       if (!this.checkFence(goalId, fencingToken)) return { ok: false as const, error: "stale-lease" };
       const currentGoal = this.getGoal(goalId); const currentRun = this.getRun(goalId);
-      if (!currentGoal || currentGoal.state !== "ACTIVE" || !currentRun || currentRun.runId !== runId || currentRun.status !== "ACTIVE" || !currentRun.baseline) return { ok: false as const, error: "stale-completion-proposal" };
+       if (!currentGoal || currentGoal.state !== "ACTIVE" || !currentRun || currentRun.runId !== runId || currentRun.status !== "FINALIZING" || !currentRun.baseline) return { ok: false as const, error: "stale-completion-proposal" };
       const contractHash = currentGoal.approvedRevisionHash;
       if (!contractHash || contractHash !== currentRun.approvedRevisionHash || !currentRun.workspacePath) return { ok: false as const, error: "run-identity-incomplete" };
       const criteria = this.getCriteria(goalId, currentRun.revision); const evidence = this.getEvidence(goalId, currentRun.runId);
       const coverage = checkCompletionCoverage(criteria, evidence); if (!coverage.complete) return { ok: false as const, error: "must-evidence-incomplete", gaps: coverage.gaps };
-      if (currentRun.verificationAttempts >= DEFAULT_MAX_VERIFICATION_ATTEMPTS && !currentRun.extraVerificationAuthorized) return { ok: false as const, error: "verification-budget-exhausted" };
+       const batchLimit = currentRun.verificationBatch * DEFAULT_MAX_VERIFICATION_ATTEMPTS;
+       if (currentRun.verificationAttempts >= batchLimit) return { ok: false as const, error: "verification-budget-exhausted" };
        const comparison = assertExecutorOwnsSnapshot(currentRun.baseline, finalSnapshot.data, executorDiff);
       if (!comparison.ok) {
         const now = this.clock.now().toISOString();
@@ -702,7 +753,7 @@ export class Store {
       }
       const attempt = currentRun.verificationAttempts + 1; const dispatchId = this.ids.next(); const messageId = openCodeMessageId(this.ids.next()); const resultId = this.ids.next(); const now = this.clock.now().toISOString();
       const payload = { kind: "verifier", attempt, instruction: "Independently verify every approved criterion against the Contract, workspace diff, and immutable evidence." };
-       this.db.run("UPDATE runs SET verification_attempts=?,extra_verification_authorized=?,status='VERIFYING',final_snapshot_json=?,executor_diff_json=?,row_version=row_version+1,updated_at=? WHERE run_id=? AND status='ACTIVE'", attempt, attempt === DEFAULT_MAX_VERIFICATION_ATTEMPTS + 1 ? 2 : 0, JSON.stringify(finalSnapshot.data), JSON.stringify(executorDiff), now, currentRun.runId);
+       this.db.run("UPDATE runs SET verification_attempts=?,status='VERIFYING',final_snapshot_json=?,executor_diff_json=?,row_version=row_version+1,updated_at=? WHERE run_id=? AND status='FINALIZING'", attempt, JSON.stringify(finalSnapshot.data), JSON.stringify(executorDiff), now, currentRun.runId);
       if ((this.db.queryOne<{ count: number }>("SELECT changes() AS count")?.count ?? 0) !== 1) return { ok: false as const, error: "stale-completion-proposal" };
       const executorDispatch = this.db.queryOne<{ dispatch_id: string }>("SELECT dispatch_id FROM dispatches WHERE run_id=? AND role='executor' AND status IN ('STARTED','SENT') ORDER BY created_at DESC LIMIT 1", currentRun.runId);
       if (executorDispatch) this.db.run("UPDATE dispatches SET status='COMPLETED',updated_at=? WHERE dispatch_id=?", now, executorDispatch.dispatch_id);
@@ -770,10 +821,10 @@ export class Store {
       if (!verifierDispatch) return { ok: false as const, error: "verifier-dispatch-not-active" };
       const criteria = this.getCriteria(goalId, run.revision);
       const derivation = deriveVerificationOutcome(
-        criteria.map(({ id, priority, description, verificationMethod }) => ({ id, priority, description, verificationMethod })),
+       criteria.map(({ id, priority, description, verification }) => ({ id, priority, description, verification })),
         this.getEvidence(goalId, run.runId).map((item) => ({ evidenceId: item.evidenceId, criterionId: item.criterionId })),
-        findings,
-        verifier.attempt,
+         findings,
+         ((verifier.attempt - 1) % DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1,
       );
       if (!derivation.ok) return { ok: false as const, error: derivation.error };
        if (derivation.outcome === "ACTIVE" && (!goal.approvedRevisionHash || goal.approvedRevisionHash !== run.approvedRevisionHash || !run.workspacePath)) return { ok: false as const, error: "run-identity-incomplete" };
@@ -802,7 +853,7 @@ export class Store {
         this.audit(goalId, "automatic_remediation_dispatched", this.instanceId, { attempt: verifier.attempt, dispatchId }, "ACTIVE", "ACTIVE", now);
         return { ok: true as const, outcome, attempt: verifier.attempt, dispatchId, messageId };
       }
-      const blockerCode = verifier.attempt > DEFAULT_MAX_VERIFICATION_ATTEMPTS ? "verification-budget-exhausted" : "verification-failed";
+       const blockerCode = verifier.attempt >= run.verificationBatch * DEFAULT_MAX_VERIFICATION_ATTEMPTS ? "verification-budget-exhausted" : "verification-failed";
       this.db.run("UPDATE goals SET blocker_code=?,blocker=?,updated_at=? WHERE goal_id=?", blockerCode, "Verification could not pass within the allowed attempts.", now, goalId);
        return { ok: true as const, outcome: outcome === "COMPLETED" && deferCompletion ? "VERIFYING" as const : outcome, attempt: verifier.attempt };
     });
@@ -831,8 +882,8 @@ export class Store {
       }
       this.db.run("UPDATE runs SET status='COMPLETED',row_version=row_version+1,updated_at=? WHERE run_id=? AND status='VERIFYING'", now, runId);
       this.db.run("UPDATE goals SET blocker_code=NULL,blocker=NULL,updated_at=? WHERE goal_id=?", now, goalId);
-      this.setState(goalId, "COMPLETED", now);
-      this.revokeGoalSessions(goalId, now);
+       this.setState(goalId, "COMPLETED", now);
+       this.revokeGoalSessions(goalId, now);
       this.db.run("UPDATE leases SET holder_instance_id=NULL,expires_at=NULL WHERE goal_id=? AND fencing_token=? AND holder_instance_id=?", goalId, fencingToken, this.instanceId);
       this.audit(goalId, "verification_finalized", this.instanceId, { runId }, "VERIFYING", "COMPLETED", now);
       return { ok: true as const };
@@ -864,7 +915,6 @@ export class Store {
       const goal = this.getGoal(goalId); const run = this.getRun(goalId);
       if (!goal || !run || run.runId !== runId || !["PAUSED", "BLOCKED"].includes(goal.state)) return { ok: false as const, error: "invalid-transition" };
       if (goal.state === "BLOCKED" && goal.blockerCode === "approval-not-approved") return { ok: false as const, error: "approval-resume-required" };
-      if (run.verificationAttempts > DEFAULT_MAX_VERIFICATION_ATTEMPTS || (run.verificationAttempts === DEFAULT_MAX_VERIFICATION_ATTEMPTS && run.extraVerificationAuthorized)) return { ok: false as const, error: "post-limit-cycle-exhausted" };
        if (!run.workspacePath || !run.baseline || run.status === "PREPARING") return { ok: false as const, error: "run-workspace-missing" };
       const now = this.clock.now().toISOString();
       if (run.checkpoint) {
@@ -881,9 +931,10 @@ export class Store {
         }
       }
       if (!goal.approvedRevisionHash || goal.approvedRevisionHash !== run.approvedRevisionHash) return { ok: false as const, error: "approved-revision-mismatch" };
-      const dispatchId = this.ids.next(); const messageId = openCodeMessageId(this.ids.next());
-      const payload = { kind: "executor-resume", attempt: run.verificationAttempts, postLimitCycle: run.verificationAttempts >= DEFAULT_MAX_VERIFICATION_ATTEMPTS };
-       this.db.run("UPDATE runs SET status='ACTIVE',extra_verification_authorized=CASE WHEN verification_attempts >= ? THEN 1 ELSE extra_verification_authorized END,row_version=row_version+1,updated_at=? WHERE run_id=?", DEFAULT_MAX_VERIFICATION_ATTEMPTS, now, run.runId);
+       const dispatchId = this.ids.next(); const messageId = openCodeMessageId(this.ids.next());
+       const nextBatch = run.verificationAttempts >= run.verificationBatch * DEFAULT_MAX_VERIFICATION_ATTEMPTS ? run.verificationBatch + 1 : run.verificationBatch;
+       const payload = { kind: "executor-resume", attempt: run.verificationAttempts, batch: nextBatch, round: nextBatch > run.verificationBatch ? 1 : (run.verificationAttempts % DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1 };
+        this.db.run("UPDATE runs SET status='ACTIVE',verification_batch=?,row_version=row_version+1,updated_at=? WHERE run_id=?", nextBatch, now, run.runId);
       this.db.run("UPDATE goals SET blocker_code=NULL,blocker=NULL,updated_at=? WHERE goal_id=?", now, goalId);
       this.setState(goalId, "ACTIVE", now);
        this.db.run("INSERT INTO dispatches(dispatch_id,goal_id,run_id,approval_attempt_id,revision,contract_hash,kind,role,verification_attempt,target_session_id,directory,message_id,payload_json,prompt_hash,status,failure_reason,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", dispatchId, goalId, run.runId, run.approvalAttemptId, run.revision, run.approvedRevisionHash, "executor-resume", "executor", null, run.executorSessionId, run.workspacePath, messageId, JSON.stringify(payload), canonicalHash(payload), "PENDING", null, 0, now, now);
@@ -910,16 +961,16 @@ export class Store {
       this.db.run("UPDATE goals SET formation_request=?,blocker_code=NULL,blocker=NULL,approved_revision_hash=NULL,current_run_id=NULL,updated_at=? WHERE goal_id=?", change, now, goalId);
        this.db.run("UPDATE approval_attempts SET status='INVALIDATED',resolved_at=? WHERE goal_id=? AND status='PENDING'", now, goalId);
       this.supersedeDispatches(goalId, null, "revision-requested", now);
-       this.db.run("UPDATE runs SET status='CANCELLED',row_version=row_version+1,updated_at=? WHERE goal_id=? AND status IN ('PREPARING','ACTIVE','VERIFYING','PAUSED','BLOCKED')", now, goalId);
+        this.db.run("UPDATE runs SET status='CANCELLED',row_version=row_version+1,updated_at=? WHERE goal_id=? AND status IN ('PREPARING','ACTIVE','FINALIZING','VERIFYING','PAUSED','BLOCKED')", now, goalId);
     });
   }
 
   cancelGoal(goalId: string, fencingToken: number): Result {
-    return this.control(goalId, fencingToken, "CANCELLED", "goal_cancelled", {}, (now) => {
+     return this.control(goalId, fencingToken, "CANCELLED", "goal_cancelled", {}, (now) => {
        this.revokeGoalSessions(goalId, now);
        this.db.run("UPDATE approval_attempts SET status='INVALIDATED',resolved_at=? WHERE goal_id=? AND status='PENDING'", now, goalId);
       this.supersedeDispatches(goalId, null, "goal-cancelled", now);
-       this.db.run("UPDATE runs SET status='CANCELLED',row_version=row_version+1,updated_at=? WHERE goal_id=? AND status IN ('PREPARING','ACTIVE','VERIFYING','PAUSED','BLOCKED')", now, goalId);
+        this.db.run("UPDATE runs SET status='CANCELLED',row_version=row_version+1,updated_at=? WHERE goal_id=? AND status IN ('PREPARING','ACTIVE','FINALIZING','VERIFYING','PAUSED','BLOCKED')", now, goalId);
     });
   }
 
@@ -935,6 +986,12 @@ export class Store {
       this.db.run("UPDATE goals SET blocker_code=?,blocker=?,updated_at=? WHERE goal_id=?", code, safeReason, now, goalId);
       if (run) {
          this.db.run("UPDATE runs SET status='BLOCKED',row_version=row_version+1,updated_at=? WHERE run_id=?", now, run.runId);
+         if (expected.state === "VERIFYING") {
+           // A blocked verification must not leave a result permanently
+           // pending. Resume starts a fresh attempt after the user acts.
+           this.db.run("UPDATE verification_results SET outcome='BLOCKED',findings_json='[]',finalized_at=? WHERE run_id=? AND outcome='PENDING'", now, run.runId);
+           this.revokeGoalSessions(goalId, now);
+         }
         this.supersedeDispatches(goalId, run.runId, "goal-blocked", now);
       } else {
         this.supersedeDispatches(goalId, null, "goal-blocked", now);
@@ -942,6 +999,40 @@ export class Store {
       this.setState(goalId, "BLOCKED", now);
       this.audit(goalId, "goal_blocked", this.instanceId, { code, reason, runId: run?.runId ?? null }, expected.state, "BLOCKED", now);
       return { ok: true as const };
+    }).immediate();
+  }
+
+  failVerifierDelivery(goalId: string, fencingToken: number, dispatchId: string, reason: string): Result & { dispatchId?: string; messageId?: string } {
+    return this.db.transaction(() => {
+      if (!this.checkFence(goalId, fencingToken)) return { ok: false as const, error: "stale-lease" };
+      const dispatch = this.getDispatch(dispatchId);
+      const goal = this.getGoal(goalId);
+      const run = dispatch?.runId ? this.getRunById(dispatch.runId) : undefined;
+      if (!dispatch || dispatch.role !== "verifier" || !run || !goal || goal.state !== "VERIFYING" || run.status !== "VERIFYING") return { ok: false as const, error: "stale-verifier-delivery" };
+      const result = this.db.queryOne<{ result_id: string; attempt: number }>("SELECT result_id,attempt FROM verification_results WHERE dispatch_id=? AND outcome='PENDING'", dispatchId);
+      if (!result) return { ok: true as const };
+      const now = this.clock.now().toISOString();
+      const safeReason = diagnosticReason(reason);
+      this.db.run("UPDATE verification_results SET outcome='ERROR',findings_json='[]',finalized_at=? WHERE result_id=? AND outcome='PENDING'", now, result.result_id);
+      this.db.run("UPDATE dispatches SET status='FAILED',failure_reason=?,updated_at=? WHERE dispatch_id=? AND status IN ('PENDING','SENT','STARTED')", safeReason, now, dispatchId);
+       if (result.attempt >= run.verificationBatch * DEFAULT_MAX_VERIFICATION_ATTEMPTS) {
+         this.db.run("UPDATE runs SET status='BLOCKED',row_version=row_version+1,updated_at=? WHERE run_id=?", now, run.runId);
+         this.db.run("UPDATE goals SET blocker_code='verification-budget-exhausted',blocker=?,updated_at=? WHERE goal_id=?", "Verification delivery failed on the final round of the batch.", now, goalId);
+         this.setState(goalId, "BLOCKED", now);
+         this.revokeGoalSessions(goalId, now);
+         this.audit(goalId, "verifier_delivery_failed", this.instanceId, { dispatchId, reason: safeReason }, "VERIFYING", "BLOCKED", now);
+         return { ok: true as const };
+       }
+       const remediationDispatchId = this.ids.next();
+       const messageId = openCodeMessageId(this.ids.next());
+       const payload = { kind: "executor-remediation", attempt: result.attempt, reason: safeReason, findings: [] };
+       this.db.run("UPDATE runs SET status='ACTIVE',row_version=row_version+1,updated_at=? WHERE run_id=?", now, run.runId);
+       this.db.run("UPDATE goals SET blocker_code=NULL,blocker=NULL,updated_at=? WHERE goal_id=?", now, goalId);
+       this.setState(goalId, "ACTIVE", now);
+       this.db.run("INSERT INTO dispatches(dispatch_id,goal_id,run_id,approval_attempt_id,revision,contract_hash,kind,role,verification_attempt,target_session_id,directory,message_id,payload_json,prompt_hash,status,failure_reason,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", remediationDispatchId, goalId, run.runId, run.approvalAttemptId, run.revision, run.approvedRevisionHash, "executor-remediation", "executor", null, run.executorSessionId, run.workspacePath, messageId, JSON.stringify(payload), canonicalHash(payload), "PENDING", null, 0, now, now);
+       if (dispatch.targetSessionId) this.revokeSession(dispatch.targetSessionId, now);
+      this.audit(goalId, "verifier_delivery_failed", this.instanceId, { dispatchId, reason: safeReason, remediationDispatchId }, "VERIFYING", "ACTIVE", now);
+      return { ok: true as const, dispatchId: remediationDispatchId, messageId };
     }).immediate();
   }
 
@@ -1047,7 +1138,11 @@ export class Store {
     const value = canonical as { value?: unknown } | unknown;
     const parsed = NativeApprovalQuestionSchema.safeParse(typeof value === "object" && value !== null && "value" in (value as Record<string, unknown>) ? (value as { value: unknown }).value : value);
     const currentQuestion = parsed.success ? parsed.data : NativeApprovalQuestionSchema.parse(canonical);
-    return createApprovalQuestion(currentQuestion.questions[0].question, generation);
+    const summary = currentQuestion.questions[0].question
+      .replace(/\n\nApprove this exact Goal Contract and start execution\?\n\nApproval request generation \d+\.?$/, "")
+      .replace(/\n\nApproval request generation \d+\.?$/, "")
+      .trim();
+    return createApprovalQuestion(summary, generation);
   }
 
   private requireLease(goalId: string): { ok: true; fencingToken: number } | { ok: false; error: string } {
@@ -1075,7 +1170,7 @@ export class Store {
 
   private readRevision(row: Record<string, unknown>): RevisionView {
     const body = ContractBodySchema.parse(JSON.parse(String(row.body_json)));
-    const criteria = this.getCriteria(String(row.goal_id), Number(row.revision)).map(({ id, priority, description, verificationMethod }) => ({ id, priority, description, verificationMethod }));
+     const criteria = this.getCriteria(String(row.goal_id), Number(row.revision)).map(({ id, priority, description, verification }) => ({ id, priority, description, verification }));
     const hash = String(row.hash);
     if (computeRevisionHash(body, criteria) !== hash) throw new Error("contract-revision-integrity-failed");
     return { goalId: String(row.goal_id), revision: Number(row.revision), body, criteria: z.array(AcceptanceCriterionSchema).parse(criteria), hash, createdAt: String(row.created_at) };
@@ -1128,7 +1223,7 @@ function toRun(row: Record<string, unknown>): RunView {
     baseline: row.baseline_json === null ? null : WorkspaceSnapshotSchema.parse(JSON.parse(String(row.baseline_json))),
     checkpoint: row.checkpoint_json === null ? null : WorkspaceSnapshotSchema.parse(JSON.parse(String(row.checkpoint_json))),
     finalSnapshot: row.final_snapshot_json === null ? null : WorkspaceSnapshotSchema.parse(JSON.parse(String(row.final_snapshot_json))),
-    executorDiff: row.executor_diff_json === null ? null : z.array(z.any()).parse(JSON.parse(String(row.executor_diff_json))),
+    executorDiff: row.executor_diff_json === null ? null : z.array(CanonicalDiffEntrySchema).parse(JSON.parse(String(row.executor_diff_json))),
     executorSessionId: row.executor_session_id === null ? null : String(row.executor_session_id),
     executorSessionKey: String(row.executor_session_key),
     executorProjectId: row.executor_project_id === null ? null : String(row.executor_project_id),
@@ -1136,7 +1231,7 @@ function toRun(row: Record<string, unknown>): RunView {
     model: providerID && modelID ? { providerID, id: modelID, ...(row.model_variant === null ? {} : { variant: String(row.model_variant) }) } : null,
     status: row.status as RunStatus,
     verificationAttempts: Number(row.verification_attempts),
-    extraVerificationAuthorized: Number(row.extra_verification_authorized ?? 0) === 1 || Number(row.extra_verification_authorized ?? 0) === 2,
+     verificationBatch: Number(row.verification_batch ?? 1),
     preparationRetryRequested: Number(row.preparation_retry_requested ?? 0) === 1,
     rowVersion: Number(row.row_version),
   };
@@ -1169,7 +1264,7 @@ function toVerificationResult(row: Record<string, unknown>): VerificationResultV
     verifierSessionId: row.verifier_session_id === null ? null : String(row.verifier_session_id),
     verifierSessionKey: row.verifier_session_key === null ? null : String(row.verifier_session_key),
     findings: z.array(VerificationFindingSchema).parse(JSON.parse(String(row.findings_json))),
-    outcome: row.outcome as VerificationResultView["outcome"],
+     outcome: row.outcome as VerificationResultView["outcome"],
     createdAt: String(row.created_at),
     finalizedAt: row.finalized_at === null ? null : String(row.finalized_at),
   };
@@ -1197,8 +1292,10 @@ function toApprovalAttempt(row: Record<string, unknown>, now: Date): ApprovalAtt
 }
 
 export function persistedPath(path: string): string {
-  const value = normalize(resolve(path)).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? value.toLowerCase() : value;
+  const value = normalize(resolve(path));
+  const root = parse(value).root;
+  const trimmed = value === root ? value : value.replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
 }
 
 function diagnosticReason(reason: string): string {

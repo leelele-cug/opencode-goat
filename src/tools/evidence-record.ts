@@ -13,6 +13,6 @@ export function createEvidenceRecordTool(orchestrator: Orchestrator): ToolDefini
       method: args.method,
       expectedResult: args.expectedResult,
       actualReference: args.actualReference,
-    }, operationKey("goat_evidence_record", context, args.criterionId)); },
+    }, operationKey("goat_evidence_record", context, args.criterionId, args)); },
   });
 }

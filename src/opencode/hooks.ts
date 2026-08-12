@@ -6,12 +6,13 @@ import { persistedPath } from "../store/store.js";
 import { assertGoatToolRegistration, registerGoatConfig } from "./config.js";
 import { executeGoatCommand } from "./commands.js";
 import type { Orchestrator } from "../runtime/orchestrator.js";
+import type { GoalOrigin } from "../runtime/process-context.js";
 
 export function createHooks(
   orchestrator: Orchestrator,
   session: SessionPort,
   registry: ToolRegistryPort,
-  origin: { readonly projectDirectory: string; readonly worktreeOrigin: string },
+  origin: GoalOrigin,
   onConfigRegistered?: () => void,
 ): Hooks {
   let goatConfigRegistered = false;
@@ -22,16 +23,17 @@ export function createHooks(
     "command.execute.before": async (input, output) => {
       if (input.command !== "goat" || !goatConfigRegistered) return;
       await checkToolRegistration();
-      if (!(await isRootSession(session, input.sessionID, origin))) {
+      const parsed = parseCommandForObservation(input.arguments);
+      if (!(await isRootSession(session, input.sessionID, origin)) && !parsed) {
         output.parts.push({ type: "text", text: "[Goat] Mutating commands require the originating root Session." } as never);
         return;
       }
-      const text = await executeGoatCommand(orchestrator, input.sessionID, input.arguments);
+       const text = await executeGoatCommand(orchestrator, input.sessionID, input.arguments, origin);
       output.parts.push({ type: "text", text } as never);
     },
     "tool.execute.before": async (input, output) => {
       if (isRegisteredGoatTool(input.tool) && goatConfigRegistered) await checkToolRegistration();
-      const decision = await orchestrator.guardGenericToolCall(input.sessionID, input.tool, input.callID, output.args);
+       const decision = await orchestrator.guardGenericToolCall(input.sessionID, input.tool, input.callID, output.args, origin.projectDirectory);
       if (!decision.allowed) throw denial(input.tool, input.sessionID, input.callID, decision.error);
     },
     "tool.execute.after": async (input, output) => {
@@ -42,23 +44,37 @@ export function createHooks(
       const value = event as { type?: string; properties?: Record<string, unknown> };
       const properties = value.properties ?? {};
       const sessionId = typeof properties.sessionID === "string" ? properties.sessionID : undefined;
+      const requestId = typeof properties.requestID === "string" ? properties.requestID : undefined;
       const messageId = typeof properties.messageID === "string" ? properties.messageID : undefined;
       switch (value.type) {
         case "question.asked":
         case "question.replied": {
           if (sessionId) {
             const binding = orchestrator.getBindingForSession(sessionId);
-            if (binding) await orchestrator.reconcileApproval(binding.goal.goalId);
+            const answers = Array.isArray(properties.answers) ? properties.answers : undefined;
+            if (answers && requestId) await orchestrator.handleQuestionAfter(sessionId, requestId, { answers }, "");
+            else if (binding) await orchestrator.reconcileApproval(binding.goal.goalId);
           }
           return;
         }
         case "question.rejected": {
-          const requestId = typeof properties.requestID === "string" ? properties.requestID : undefined;
           if (sessionId && requestId) await orchestrator.handleQuestionRejected(sessionId, requestId);
           return;
         }
         case "session.next.prompted": {
           if (sessionId && messageId) await orchestrator.handlePrompted(sessionId, messageId);
+          return;
+        }
+        case "message.updated": {
+          if (sessionId) await orchestrator.handleMessageUpdated(sessionId, properties.info);
+          return;
+        }
+        case "session.idle": {
+          if (sessionId) await orchestrator.handleSessionIdle(sessionId);
+          return;
+        }
+        case "session.error": {
+          if (sessionId) await orchestrator.handleSessionError(sessionId);
           return;
         }
         case "worktree.ready": {
@@ -87,6 +103,11 @@ export function createHooks(
     },
     "experimental.compaction.autocontinue": async (input, output) => { if (orchestrator.getBindingForSession(input.sessionID)) output.enabled = false; },
   };
+}
+
+function parseCommandForObservation(arguments_: string): boolean {
+  const value = arguments_.trim().toLowerCase();
+  return value === "" || value === "status" || value === "help" || value === "doctor";
 }
 
 async function isRootSession(session: SessionPort, sessionID: string, origin: { readonly projectDirectory: string }): Promise<boolean> {
