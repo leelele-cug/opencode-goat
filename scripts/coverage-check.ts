@@ -18,9 +18,11 @@ output = stripAnsi(output);
 process.stdout.write(output);
 const diagnostic = output.trim().slice(-6_000).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 const reportDiagnostic = (): void => {
+  process.stderr.write(`Coverage diagnostics:\n${output.trim().slice(-6_000)}\n`);
   if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=Coverage diagnostics::${diagnostic}\n`);
 };
-const match = output.match(/All files\s+\|\s+[\d.]+\s+\|\s+([\d.]+)\s+\|/);
+const coverageLine = output.split(/\r?\n/).find((line) => /\bAll files\b/.test(line));
+const match = coverageLine?.match(/All files\s*\|\s*[\d.]+\s*\|\s*([\d.]+)/);
 if (!match) {
   reportDiagnostic();
   throw new Error("coverage summary was not found");
