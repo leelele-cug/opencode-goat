@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
+const bunExecutable = Bun.which("bun") ?? process.execPath;
 const timeoutMs = Number(process.env.OPENCODE_SMOKE_TIMEOUT_MS ?? 300_000);
 const envKeys = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_GOAT_HOME", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD"] as const;
 const smokeModel = process.env.OPENCODE_SMOKE_MODEL ?? "Ark/deepseek-v4-flash";
@@ -23,7 +24,7 @@ async function packTarball(workspaceRoot: string): Promise<{ path: string; owned
     await readFile(supplied);
     return { path: supplied, owned: false };
   }
-  await execFileAsync(process.execPath, ["pm", "pack", "--no-progress"], { cwd: workspaceRoot, windowsHide: true, timeout: 120_000 });
+  await execFileAsync(bunExecutable, ["pm", "pack", "--no-progress"], { cwd: workspaceRoot, windowsHide: true, timeout: 120_000 });
   const manifest = JSON.parse(await readFile(join(workspaceRoot, "package.json"), "utf8")) as { name: string; version: string };
   return { path: join(workspaceRoot, `${manifest.name}-${manifest.version}.tgz`), owned: true };
 }
@@ -332,7 +333,7 @@ async function main(): Promise<void> {
     const timings = new Map<string, number>();
     const candidate = await timed(timings, "pack", packTarball(workspaceRoot));
     const tarball = candidate.path;
-   await timed(timings, "install", execFileAsync(process.execPath, ["install", tarball], { cwd: project, windowsHide: true, timeout: 120_000 }));
+   await timed(timings, "install", execFileAsync(bunExecutable, ["install", tarball], { cwd: project, windowsHide: true, timeout: 120_000 }));
    if (candidate.owned) await rm(tarball, { force: true });
   const installedPackage = join(project, "node_modules", "opencode-goat");
    if (!(await readdir(join(installedPackage, "dist")).catch(() => [] as string[])).includes("index.js")) {

@@ -8,9 +8,10 @@ import { createHash } from "node:crypto";
 
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
+const bunExecutable = Bun.which("bun") ?? process.execPath;
 
 async function pack(): Promise<string> {
-  const { stdout } = await execFileAsync(process.execPath, ["pm", "pack", "--no-progress"], { cwd: root, windowsHide: true, timeout: 120_000 });
+  const { stdout } = await execFileAsync(bunExecutable, ["pm", "pack", "--no-progress"], { cwd: root, windowsHide: true, timeout: 120_000 });
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { name: string; version: string };
   const candidate = join(root, `${manifest.name}-${manifest.version}.tgz`);
   try {
@@ -134,10 +135,10 @@ async function main(): Promise<void> {
       const project = join(temp, "project");
       await mkdir(project, { recursive: true });
       await writeFile(join(project, "package.json"), JSON.stringify({ name: "goat-package-smoke", private: true, type: "module" }, null, 2), "utf8");
-      await execFileAsync(process.execPath, ["install", tarball], { cwd: project, windowsHide: true, timeout: 120_000 });
+      await execFileAsync(bunExecutable, ["install", tarball], { cwd: project, windowsHide: true, timeout: 120_000 });
       const installed = join(project, "node_modules", "opencode-goat");
       await writeFile(join(project, "import.mjs"), "const mod = await import('opencode-goat/server'); if (mod.default?.id !== 'goat' || typeof mod.server !== 'function') process.exit(1);\n", "utf8");
-      await execFileAsync(process.execPath, ["run", "import.mjs"], { cwd: project, windowsHide: true, timeout: 120_000 });
+      await execFileAsync(bunExecutable, ["run", "import.mjs"], { cwd: project, windowsHide: true, timeout: 120_000 });
       const files = (await listFiles(installed, ".")).map((file) => file.replace(/^\.\//, ""));
       const unexpected = files.filter((file) => !allowed.has(file));
       if (unexpected.length > 0) throw new Error(`unexpected packaged files: ${unexpected.join(", ")}`);

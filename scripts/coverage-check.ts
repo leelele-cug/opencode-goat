@@ -1,5 +1,6 @@
 const minimumLines = 85;
-const result = Bun.spawnSync({ cmd: [process.execPath, "test", "--coverage", "--coverage-reporter=text"], stdout: "pipe", stderr: "pipe" });
+const bunExecutable = Bun.which("bun") ?? process.execPath;
+const result = Bun.spawnSync({ cmd: [bunExecutable, "test", "--coverage", "--coverage-reporter=text"], stdout: "pipe", stderr: "pipe" });
 const stripAnsi = (value: string): string => value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
 const output = stripAnsi(`${new TextDecoder().decode(result.stdout)}\n${new TextDecoder().decode(result.stderr)}`);
 process.stdout.write(output);
