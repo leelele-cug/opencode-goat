@@ -141,7 +141,7 @@ function indexDiffEntries(entries: readonly CanonicalDiffEntry[]): Map<string, C
 
 function sameDiffEntry(left: CanonicalDiffEntry, right: CanonicalDiffEntry): boolean {
   if (left.path !== right.path || left.status !== right.status || left.additions !== right.additions || left.deletions !== right.deletions) return false;
-  if (left.status === "added") return addedPatchContentHash(left.patch) === addedPatchContentHash(right.patch);
+  if (left.status === "added") return true;
   return comparablePatch(left.patch) === comparablePatch(right.patch);
 }
 
