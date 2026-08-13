@@ -59,7 +59,15 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           if [[ "$version" == *-* ]]; then tag=alpha; else tag=latest; fi
-          npm publish "opencode-goat-$version.tgz" --access public --tag "$tag"
+          set +e
+          output=$(npm publish "opencode-goat-$version.tgz" --access public --tag "$tag" 2>&1)
+          status=$?
+          printf '%s\n' "$output"
+          if [[ "$status" -ne 0 ]]; then
+            diagnostic=$(printf '%s' "$output" | tail -c 4000 | tr '\n' ' ' | sed 's/%/%25/g')
+            printf '::error title=npm publish::%s\n' "$diagnostic"
+            exit "$status"
+          fi
       - name: Create GitHub release
         if: github.event_name == 'push'
         env:
