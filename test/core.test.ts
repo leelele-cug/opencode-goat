@@ -227,6 +227,13 @@ describe("Workspace snapshots", () => {
     expect(assertExecutorOwnsSnapshot(base, snapshot([entry("new.ts", finalPatch, "added")]), [entry("new.ts", executorPatch, "added")])).toEqual({ ok: true });
   });
 
+  test("added-file attribution ignores equivalent patch headers", () => {
+    const base = snapshot([]);
+    const finalPatch = "diff --git a/new.ts b/new.ts\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+content\n";
+    const executorPatch = "diff --git a/new.ts b/new.ts\n--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1,1 @@\n+content";
+    expect(assertExecutorOwnsSnapshot(base, snapshot([entry("new.ts", finalPatch, "added")]), [entry("new.ts", executorPatch, "added")])).toEqual({ ok: true });
+  });
+
   test("a file already dirty at baseline changed again during the run fails closed", () => {
     const base = snapshot([entry("src/main.ts", "patch-base")]);
     expect(assertExecutorOwnsSnapshot(base, snapshot([entry("src/main.ts", "patch-base"), entry("src/other.ts", "patch-x")]), [entry("src/other.ts", "patch-x")])).toEqual({ ok: true });
