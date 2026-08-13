@@ -110,7 +110,7 @@ bun run coverage:check coverage-gated tests
 bun run build        clean build to dist/
 bun test             unit/integration tests
 bun run pack:smoke   real tarball install and export verification
-bun run smoke:opencode   authenticated live smoke (defaults to opencode/deepseek-v4-flash; override with OPENCODE_SMOKE_MODEL)
+bun run smoke:opencode   authenticated live smoke (defaults to opencode/deepseek-v4-flash-free; override with OPENCODE_SMOKE_MODEL)
 ```
 
 ## License

@@ -4,7 +4,7 @@
 
 - Schema v8 and ten-round verification batches.
 - OpenCode CLI compatibility starts at `>=1.18.15`; plugin and SDK build pins remain `1.18.15`.
-- Authenticated smoke defaults to `opencode/deepseek-v4-flash` without changing user Goal models.
+- Authenticated smoke defaults to `opencode/deepseek-v4-flash-free` without changing user Goal models.
 - Root and native-worktree plugin instances now share one project-scoped lease owner.
 - Executor and Verifier idle/error Sessions now terminate stuck Runs explicitly.
 - Authenticated smoke diagnostics fail fast and preserve failed artifacts.

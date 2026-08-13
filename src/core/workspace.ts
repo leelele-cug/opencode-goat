@@ -144,7 +144,7 @@ function sameDiffEntry(left: CanonicalDiffEntry, right: CanonicalDiffEntry): boo
 }
 
 function comparablePatch(patch: string): string {
-  return patch.replace(/\r\n/g, "\n").split("\n").filter((line) => !line.startsWith("diff --git ") && !line.startsWith("index ") && !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("@@ ")).join("\n");
+  return patch.replace(/\r\n/g, "\n").split("\n").filter((line) => !line.startsWith("diff --git ") && !line.startsWith("index ") && !line.startsWith("new file mode ") && !line.startsWith("deleted file mode ") && !line.startsWith("old mode ") && !line.startsWith("new mode ") && !line.startsWith("similarity index ") && !line.startsWith("rename from ") && !line.startsWith("rename to ") && !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("@@ ")).join("\n").replace(/\n+$/, "");
 }
 
 export function canonicalizeExecutorDiff(value: unknown, platform: WorkspacePlatform): { ok: true; entries: readonly CanonicalDiffEntry[] } | { ok: false; code: "invalid-diff-shape" | "patch-missing" | "patch-too-large" } {
@@ -283,7 +283,7 @@ function addedPatchContentHash(patch: string): string | undefined {
   const lines = patch.split(/\r?\n/);
   const added = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
   if (added.length === 0) return undefined;
-  const content = added.map((line) => line.slice(1)).join("\n") + (patch.endsWith("\n") && !patch.includes("\\ No newline at end of file") ? "\n" : "");
+  const content = added.map((line) => line.slice(1)).join("\n") + (patch.includes("\\ No newline at end of file") ? "" : "\n");
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 

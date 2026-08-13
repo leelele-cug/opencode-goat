@@ -9,7 +9,7 @@ Before opening a change:
 - Run `bun run smoke:opencode` when authenticated OpenCode credentials and a
   smoke model are available.
 - Keep a compatible OpenCode CLI on `PATH`; the smoke defaults to
-  `opencode/deepseek-v4-flash` and accepts `OPENCODE_SMOKE_MODEL` for overrides.
+  `opencode/deepseek-v4-flash-free` and accepts `OPENCODE_SMOKE_MODEL` for overrides.
 
 Changes that affect lifecycle, workspace attribution, permissions, leases,
 Session identity, or schema must include regression tests. Never include

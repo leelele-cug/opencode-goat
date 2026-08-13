@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const bunExecutable = Bun.which("bun") ?? process.execPath;
 const timeoutMs = Number(process.env.OPENCODE_SMOKE_TIMEOUT_MS ?? 300_000);
 const envKeys = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_GOAT_HOME", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD"] as const;
-const smokeModel = process.env.OPENCODE_SMOKE_MODEL ?? "opencode/deepseek-v4-flash";
+const smokeModel = process.env.OPENCODE_SMOKE_MODEL ?? "opencode/deepseek-v4-flash-free";
 const smokeModelSeparator = smokeModel.indexOf("/");
 if (smokeModelSeparator <= 0 || smokeModelSeparator === smokeModel.length - 1) throw new Error(`OPENCODE_SMOKE_MODEL must be provider/model, received ${smokeModel}`);
 const smokeProvider = smokeModel.slice(0, smokeModelSeparator);
@@ -58,14 +58,14 @@ type SmokeWorktree = string | { name?: string; directory?: string };
 const cases: readonly SmokeCase[] = [
   {
     name: "current",
-    intent: "Deterministic smoke contract: immediately call goat_state and goat_contract_propose without repository exploration. Use the current workspace. Define exactly one MUST criterion: add smoke-current.txt with exactly CURRENT_SMOKE_OK followed by one LF newline, verified by one inspection step that reads the file. Use only OpenCode native tools, never filesystem_* or MCP tools. Do not add any other criteria, commands, scope, or questions except the exact approval Question.",
+    intent: "SMOKE ACTION: call goat_state now. Then call goat_contract_propose immediately. Do not reply with prose. Do not use generic tools or create files. Contract: Executor adds smoke-current.txt in the current workspace with exact content CURRENT_SMOKE_OK plus one LF newline. Define exactly one MUST criterion for that file, verified by one inspection step reading the file. No other criteria or questions; use only the exact approval Question returned by the contract tool.",
     file: "smoke-current.txt",
     content: "CURRENT_SMOKE_OK\n",
     workspace: "current",
   },
   {
     name: "worktree",
-    intent: "Deterministic smoke contract: immediately call goat_state and goat_contract_propose without repository exploration. You MUST use the native isolated Git worktree already prepared by Goat, not the current workspace. Define exactly one MUST criterion: add smoke-worktree.txt with exactly WORKTREE_SMOKE_OK followed by one LF newline, verified by one inspection step that reads the file. Use only OpenCode native tools, never filesystem_* or MCP tools. Do not add any other criteria, commands, scope, or questions except the exact approval Question.",
+    intent: "SMOKE ACTION: call goat_state now. Then call goat_contract_propose immediately. Do not reply with prose. Do not use generic tools or create files. Contract: use the native isolated Git worktree already prepared by Goat, not the current workspace. Executor adds smoke-worktree.txt there with exact content WORKTREE_SMOKE_OK plus one LF newline. Define exactly one MUST criterion for that file, verified by one inspection step reading the file. No other criteria or questions; use only the exact approval Question returned by the contract tool.",
     file: "smoke-worktree.txt",
     content: "WORKTREE_SMOKE_OK\n",
     workspace: "worktree",
@@ -152,6 +152,15 @@ function withBudget<T>(label: string, operation: Promise<T>, deadline: number, c
   return withTimeout(label, operation, remainingBudget(deadline, cap));
 }
 
+async function continueSession(client: OpencodeClient, sessionID: string, directory: string, agent: "goat-formulator" | "goat-executor", text: string, deadline: number): Promise<void> {
+  unwrap(await withBudget("session continuation", client.session.promptAsync({ sessionID, directory, agent, parts: [{ type: "text", text }] }), deadline));
+}
+
+async function sessionIsIdle(client: OpencodeClient, sessionID: string, directory: string): Promise<boolean> {
+  const statuses = unwrap<Record<string, { type?: string }>>(await client.session.status({ directory }));
+  return statuses[sessionID]?.type === "idle";
+}
+
 async function answerPendingRequests(client: OpencodeClient, directories: readonly string[], deadline: number): Promise<void> {
   await Promise.all(directories.map(async (directory) => {
     const [questions, permissions] = await Promise.all([
@@ -208,6 +217,8 @@ async function waitForCompletion(client: OpencodeClient, directory: string, root
   const started = Date.now();
   const deadline = started + timeoutMs;
   let polls = 0;
+  let formulatorRetried = false;
+  let executorRetried = false;
   while (Date.now() < deadline) {
     polls += 1;
     const error = commandError();
@@ -215,6 +226,17 @@ async function waitForCompletion(client: OpencodeClient, directory: string, root
     const snapshot = goatWorkflowSnapshot(goatHome, rootSessionID);
     failOnUnexpectedWorkflow(snapshot);
     if (workflowCompleted(snapshot)) break;
+    if (!formulatorRetried && snapshot?.goalState === "FORMING" && await sessionIsIdle(client, rootSessionID, directory)) {
+      formulatorRetried = true;
+      await continueSession(client, rootSessionID, directory, "goat-formulator", "Continue Goat formulation now. Call goat_state, then call goat_contract_propose. Do not reply in prose.", deadline);
+    }
+    if (!executorRetried && snapshot?.runStatus === "ACTIVE") {
+      const executor = snapshot.dispatches.find((dispatch) => dispatch.role === "executor" && ["SENT", "STARTED"].includes(dispatch.status ?? ""));
+      if (executor?.targetSessionId && await sessionIsIdle(client, executor.targetSessionId, snapshot.workspacePath ?? directory)) {
+        executorRetried = true;
+        await continueSession(client, executor.targetSessionId, snapshot.workspacePath ?? directory, "goat-executor", "Continue executing the approved Contract now. Call goat_state, make the required change, record evidence with goat_evidence_record, then call goat_completion_propose. Do not reply in prose.", deadline);
+      }
+    }
     const directories = [directory, ...(snapshot?.workspacePath && snapshot.workspacePath.toLowerCase() !== directory.toLowerCase() ? [snapshot.workspacePath] : [])];
     await answerPendingRequests(client, directories, deadline);
     const refreshed = goatWorkflowSnapshot(goatHome, rootSessionID);
@@ -267,11 +289,11 @@ function goatWorkflowSnapshot(goatHome: string, rootSessionID: string): Workflow
 async function runCase(client: OpencodeClient, project: string, goatHome: string, smokeCase: SmokeCase, timings: Map<string, number>): Promise<void> {
   const caseStarted = Date.now();
   const before = unwrap<SmokeWorktree[]>(await withTimeout("worktree list", client.worktree.list({ directory: project })));
-  const session = unwrap<{ id: string }>(await withTimeout("session create", client.session.create({ directory: project, title: `Goat smoke ${smokeCase.name}`, model: { providerID: smokeProvider, id: smokeModelID }, permission: [{ permission: "question", pattern: "*", action: "allow" }] })));
+  const session = unwrap<{ id: string }>(await withTimeout("session create", client.session.create({ directory: project, title: `Goat smoke ${smokeCase.name}`, agent: "goat-formulator", model: { providerID: smokeProvider, id: smokeModelID }, permission: [{ permission: "question", pattern: "*", action: "allow" }] })));
   const metadata = unwrap<{ model?: { providerID?: string; id?: string } }>(await withTimeout("session metadata", client.session.get({ sessionID: session.id, directory: project })));
   if (metadata.model?.providerID !== smokeProvider || metadata.model.id !== smokeModelID) throw new Error(`smoke session selected ${metadata.model?.providerID ?? "unknown"}/${metadata.model?.id ?? "unknown"}, expected ${smokeModel}`);
   let commandError: unknown;
-  void client.session.command({ sessionID: session.id, directory: project, command: "goat", arguments: smokeCase.intent }).then((result) => { try { unwrap(result); } catch (error) { commandError = error; } }, (error) => { commandError = error; });
+  void client.session.command({ sessionID: session.id, directory: project, command: "goat", arguments: smokeCase.intent, agent: "goat-formulator" }).then((result) => { try { unwrap(result); } catch (error) { commandError = error; } }, (error) => { commandError = error; });
    await waitForCompletion(client, project, session.id, goatHome, () => commandError, timings, smokeCase.name);
    const completed = goatWorkflowSnapshot(goatHome, session.id);
    if (!workflowCompleted(completed) || completed?.verificationAttempts !== 1) throw new Error(`smoke ${smokeCase.name} did not complete on verification attempt one`);

@@ -48,4 +48,4 @@ jobs:
           done
         env:
           OPENCODE_CONFIG_CONTENT: ${{ secrets.OPENCODE_CONFIG_CONTENT }}
-          OPENCODE_SMOKE_MODEL: ${{ vars.OPENCODE_SMOKE_MODEL || 'opencode/deepseek-v4-flash' }}
+          OPENCODE_SMOKE_MODEL: ${{ vars.OPENCODE_SMOKE_MODEL || 'opencode/deepseek-v4-flash-free' }}
