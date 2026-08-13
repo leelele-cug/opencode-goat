@@ -22,6 +22,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -57,6 +60,8 @@ jobs:
         env:
           NPM_CONFIG_PROVENANCE: true
         run: |
+          npm install --global npm@11.6.2
+          npm --version
           version=$(node -p "require('./package.json').version")
           if [[ "$version" == *-* ]]; then tag=alpha; else tag=latest; fi
           set +e
