@@ -259,7 +259,7 @@ async function waitForCompletion(client: OpencodeClient, directory: string, root
   throw new Error(`Goat workflow did not reach COMPLETED before the smoke deadline\n${recent.join("\n")}`);
 }
 
-type WorkflowSnapshot = { goalState: string | undefined; runStatus: string | undefined; workspacePath: string | undefined; verificationAttempts: number | undefined; verificationOutcome: string | undefined; dispatches: { kind?: string; role?: string; status?: string; targetSessionId?: string }[]; lease: unknown };
+type WorkflowSnapshot = { goalState: string | undefined; blocker: string | undefined; runStatus: string | undefined; workspacePath: string | undefined; verificationAttempts: number | undefined; verificationOutcome: string | undefined; dispatches: { kind?: string; role?: string; status?: string; failureReason?: string; targetSessionId?: string }[]; lease: unknown };
 
 function workflowCompleted(snapshot: WorkflowSnapshot | null): boolean {
   return snapshot?.goalState === "COMPLETED" && snapshot.runStatus === "COMPLETED" && snapshot.verificationOutcome === "PASS";
@@ -276,13 +276,13 @@ function failOnUnexpectedWorkflow(snapshot: WorkflowSnapshot | null): void {
 function goatWorkflowSnapshot(goatHome: string, rootSessionID: string): WorkflowSnapshot | null {
   try {
     const db = new Database(join(goatHome, "goat.db"), { readonly: true });
-    const goal = (db.query("SELECT goal_id,state FROM goals WHERE root_session_id=? ORDER BY rowid DESC LIMIT 1").all(rootSessionID)[0] ?? null) as { goal_id?: string; state?: string } | null;
+    const goal = (db.query("SELECT goal_id,state,blocker FROM goals WHERE root_session_id=? ORDER BY rowid DESC LIMIT 1").all(rootSessionID)[0] ?? null) as { goal_id?: string; state?: string; blocker?: string } | null;
     const run = goal?.goal_id ? ((db.query("SELECT run_id,status,workspace_path,verification_attempts FROM runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1").all(goal.goal_id)[0] ?? null) as { run_id?: string; status?: string; workspace_path?: string; verification_attempts?: number } | null) : null;
     const verification = run?.run_id ? ((db.query("SELECT outcome FROM verification_results WHERE run_id=? ORDER BY attempt DESC LIMIT 1").all(run.run_id)[0] ?? null) as { outcome?: string } | null) : null;
-    const dispatches = goal?.goal_id ? db.query("SELECT kind,role,status,target_session_id AS targetSessionId FROM dispatches WHERE goal_id=? ORDER BY created_at").all(goal.goal_id) as { kind?: string; role?: string; status?: string; targetSessionId?: string }[] : [];
+    const dispatches = goal?.goal_id ? db.query("SELECT kind,role,status,failure_reason AS failureReason,target_session_id AS targetSessionId FROM dispatches WHERE goal_id=? ORDER BY created_at").all(goal.goal_id) as { kind?: string; role?: string; status?: string; failureReason?: string; targetSessionId?: string }[] : [];
     const lease = goal?.goal_id ? db.query("SELECT holder_instance_id AS holderInstanceId,expires_at AS expiresAt FROM leases WHERE goal_id=?").all(goal.goal_id)[0] : undefined;
     db.close();
-    return { goalState: goal?.state, runStatus: run?.status, workspacePath: run?.workspace_path, verificationAttempts: run?.verification_attempts, verificationOutcome: verification?.outcome, dispatches, lease };
+    return { goalState: goal?.state, blocker: goal?.blocker, runStatus: run?.status, workspacePath: run?.workspace_path, verificationAttempts: run?.verification_attempts, verificationOutcome: verification?.outcome, dispatches, lease };
   } catch { return null; }
 }
 
