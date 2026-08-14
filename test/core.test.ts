@@ -254,6 +254,14 @@ describe("Workspace snapshots", () => {
     expect(assertExecutorOwnsSnapshot(base, snapshot([], [{ ...untracked, contentHash: "c".repeat(64) }]), [entry("untracked.txt", patch, "added")])).toMatchObject({ ok: false, code: "attribution-incomplete" });
   });
 
+  test("untracked files without a trailing newline can be attributed", () => {
+    const base = snapshot([]);
+    const content = "content";
+    const contentHash = new Bun.CryptoHasher("sha256").update(content).digest("hex");
+    const patch = "diff --git a/untracked.txt b/untracked.txt\n--- /dev/null\n+++ b/untracked.txt\n@@ -0,0 +1 @@\n+content\n\\ No newline at end of file";
+    expect(assertExecutorOwnsSnapshot(base, snapshot([], [{ path: "untracked.txt", contentHash }]), [entry("untracked.txt", patch, "added")])).toEqual({ ok: true });
+  });
+
   test("a moved HEAD fails closed", () => {
     const base = snapshot([]);
     const moved = { ...snapshot([]), head: "b".repeat(40) };

@@ -5,7 +5,7 @@ import { NativeApprovalQuestionSchema } from "../core/question.js";
 import { isApprovedVerificationCommand } from "../core/contract.js";
 import { DEFAULT_MAX_VERIFICATION_ATTEMPTS, type GoalState } from "../core/state.js";
 import { ROLE_CAPABILITIES, type GoatRole, guardGenericTool, isRegisteredGoatTool, roleForAgent, sessionDenyRules, validateGoatToolAccess } from "../core/role-capabilities.js";
-import { assertExecutorOwnsSnapshot, assertSnapshotUnchanged, canonicalizeExecutorDiff, isWorkspaceClean, normalizeWorkspacePath, validateWorkspaceToolArguments, type CanonicalDiffEntry, type WorkspaceSnapshot } from "../core/workspace.js";
+import { addedPatchContentHash, assertExecutorOwnsSnapshot, assertSnapshotUnchanged, canonicalizeExecutorDiff, isWorkspaceClean, normalizeWorkspacePath, validateWorkspaceToolArguments, type CanonicalDiffEntry, type WorkspaceSnapshot } from "../core/workspace.js";
 import type { BlockerCode } from "../core/errors.js";
 import type { Store, GoalView, RunView, DispatchView, ApprovalAttemptView, SessionBinding } from "../store/store.js";
 import { persistedPath } from "../store/store.js";
@@ -1215,11 +1215,12 @@ function attributeExecutorUntrackedChanges(
           if (rawPath) {
             try {
               const path = normalizeWorkspacePath(relativeExecutorPath(rawPath, directory), platform);
-              if (untracked.has(path) && !attributed.has(path)) {
+              const currentHash = current.untracked.find((entry) => entry.path === path)?.contentHash;
+              if (untracked.has(path) && (!attributed.has(path) || addedPatchContentHash(attributed.get(path)?.patch) !== currentHash)) {
                 const lines = record.content.split(/\r?\n/);
                 const contentLines = record.content.endsWith("\n") ? lines.slice(0, -1) : lines;
                 const patchBody = contentLines.map((line) => `+${line}`).join("\n");
-                const patch = `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${contentLines.length} @@\n${patchBody}${record.content.endsWith("\n") ? "\n" : ""}`;
+                const patch = `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${contentLines.length} @@\n${patchBody}${record.content.endsWith("\n") ? "\n" : "\n\\ No newline at end of file\n"}`;
                 attributed.set(path, { path, status: "added", additions: contentLines.length, deletions: 0, patch });
               }
             } catch { /* invalid or out-of-workspace tool targets remain unattributed */ }

@@ -281,7 +281,8 @@ export function assertExecutorOwnsSnapshot(baseline: WorkspaceSnapshot, current:
   return { ok: true };
 }
 
-function addedPatchContentHash(patch: string): string | undefined {
+export function addedPatchContentHash(patch: string | undefined): string | undefined {
+  if (patch === undefined) return undefined;
   const lines = patch.split(/\r?\n/);
   const added = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
   if (added.length === 0) return undefined;
