@@ -1,23 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="620" viewBox="0 0 1400 620" role="img" aria-labelledby="title desc">
-  <title id="title">Goat 证据闭环工作流</title>
-  <desc id="desc">意图先形成 Contract，经用户审批后在受限 workspace 执行，再由独立 Verifier 验证；失败会回到执行阶段修正。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="500" viewBox="0 0 1400 500" role="img" aria-labelledby="title desc">
+  <title id="title">Goat Contract 驱动的 Goal 工作流</title>
+  <desc id="desc">Goal 形成精确 Contract，经用户审批后在已批准的 worktree 中执行，再由独立 Verifier 验证。通过后完成，失败则返回执行阶段修正。</desc>
   <defs>
-    <marker id="arrow-lime" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#b7ef4a"/></marker>
-    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#67d6ce"/></marker>
-    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#ffb45b"/></marker>
-    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#6a8587" stroke-opacity=".12"/></pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#71807D"/></marker>
+    <marker id="arrow-pass" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#B7EF4A"/></marker>
   </defs>
-  <rect width="1400" height="620" rx="28" fill="#172329"/><rect width="1400" height="620" rx="28" fill="url(#grid)"/>
-  <text x="70" y="70" fill="#b7ef4a" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="16" letter-spacing="4">证据闭环</text>
-  <text x="70" y="108" fill="#f4efe4" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="30" font-weight="700">授权向前，证据回流。</text>
-  <text x="70" y="137" fill="#91aaa5" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="16">用户掌握闸门；每一项 MUST 标准都必须带着证据返回。</text>
-  <path d="M365 260C450 260 475 180 550 180" fill="none" stroke="#b7ef4a" stroke-width="4" marker-end="url(#arrow-lime)"/><path d="M850 180C930 180 960 260 1035 260" fill="none" stroke="#b7ef4a" stroke-width="4" marker-end="url(#arrow-lime)"/><path d="M1165 375C1165 475 1020 500 850 500" fill="none" stroke="#67d6ce" stroke-width="4" marker-end="url(#arrow-cyan)"/><path d="M850 500C980 500 980 410 1035 360" fill="none" stroke="#ffb45b" stroke-width="3" stroke-dasharray="9 10" marker-end="url(#arrow-orange)"/>
-  <text x="900" y="218" fill="#b7ef4a" font-family="Consolas,monospace" font-size="12" letter-spacing="2">已批准的执行权</text><text x="950" y="476" fill="#67d6ce" font-family="Consolas,monospace" font-size="12" letter-spacing="2">证据回流</text><text x="875" y="545" fill="#ffcf91" font-family="Consolas,monospace" font-size="12" letter-spacing="2">失败 / 修订 / 重试</text>
-  <g font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif">
-    <g transform="translate(70 205)"><rect width="295" height="170" rx="20" fill="#203237" stroke="#45605f" stroke-width="2"/><circle cx="42" cy="42" r="22" fill="#172329" stroke="#67d6ce" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#67d6ce" font-family="Consolas,monospace" font-size="15">01</text><text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">整理意图</text><text x="28" y="93" fill="#c9d7d1" font-size="15">Formulator 保持只读。</text><text x="28" y="119" fill="#91aaa5" font-size="14">结果、范围、约束、假设</text><text x="28" y="141" fill="#91aaa5" font-size="14">和 MUST 标准变得可观察。</text></g>
-    <g transform="translate(550 95)"><rect width="300" height="170" rx="20" fill="#203237" stroke="#ffb45b" stroke-width="2"/><circle cx="42" cy="42" r="22" fill="#172329" stroke="#ffb45b" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#ffb45b" font-family="Consolas,monospace" font-size="15">02</text><text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">打开审批闸门</text><text x="28" y="93" fill="#c9d7d1" font-size="15">用户批准精确 Contract。</text><text x="28" y="119" fill="#ffcf91" font-size="14">此前不写入项目 workspace。</text><text x="28" y="141" fill="#91aaa5" font-size="14">原生权限始终是最终策略。</text></g>
-    <g transform="translate(1035 205)"><rect width="295" height="170" rx="20" fill="#203237" stroke="#b7ef4a" stroke-width="2"/><circle cx="42" cy="42" r="22" fill="#172329" stroke="#b7ef4a" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#b7ef4a" font-family="Consolas,monospace" font-size="15">03</text><text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">执行并留证</text><text x="28" y="93" fill="#c9d7d1" font-size="15">Executor 在批准的 workspace</text><text x="28" y="119" fill="#91aaa5" font-size="14">中工作，并为每项 MUST</text><text x="28" y="141" fill="#91aaa5" font-size="14">标准记录证据。</text></g>
-    <g transform="translate(550 415)"><rect width="300" height="155" rx="20" fill="#203237" stroke="#67d6ce" stroke-width="2"/><circle cx="42" cy="42" r="22" fill="#172329" stroke="#67d6ce" stroke-width="3"/><text x="42" y="48" text-anchor="middle" fill="#67d6ce" font-family="Consolas,monospace" font-size="15">04</text><text x="78" y="39" fill="#f4efe4" font-size="24" font-weight="700">独立验证</text><text x="28" y="91" fill="#c9d7d1" font-size="15">Verifier 检查 diff 和证据。</text><text x="28" y="117" fill="#67d6ce" font-size="14">PASS 完成；FAIL 回到 03。</text></g>
+  <rect width="1400" height="500" fill="#172329"/>
+  <g transform="translate(58 46) scale(.75)">
+    <path d="M48 20c-4-5-10-8-17-8-11 0-19 8-19 20s8 20 19 20c7 0 13-3 17-8V32H35" fill="none" stroke="#F4EFE4" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M22 34l7 7 16-18" fill="none" stroke="#B7EF4A" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
-  <g transform="translate(1050 510)"><rect width="280" height="54" rx="15" fill="#b7ef4a"/><text x="140" y="34" text-anchor="middle" fill="#172329" font-family="Consolas,monospace" font-size="14" font-weight="700" letter-spacing="2">完成 = 证据充分</text></g>
+  <text x="118" y="75" fill="#F4EFE4" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="27" font-weight="700">Contract 驱动的 Goal 工作流</text>
+  <text x="118" y="104" fill="#98A6A3" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="15">审批前不写入 workspace；独立验证前不完成 Goal。</text>
+  <g fill="none" stroke="#71807D" stroke-width="3" marker-end="url(#arrow)">
+    <path d="M126 218H304"/>
+    <path d="M346 218H524"/>
+    <path d="M566 218H744"/>
+    <path d="M786 218H964"/>
+  </g>
+  <path d="M1006 218H1184" fill="none" stroke="#B7EF4A" stroke-width="3" marker-end="url(#arrow-pass)"/>
+  <path d="M1000 232C1048 276 1042 410 930 410H860C813 410 810 336 835 298L791 234" fill="none" stroke="#71807D" stroke-width="2.5" stroke-dasharray="7 9" marker-end="url(#arrow)"/>
+  <g font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" text-anchor="middle">
+    <g>
+      <circle cx="105" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+      <text x="105" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Goal</text>
+      <text x="105" y="303" fill="#98A6A3" font-size="14">原始意图</text>
+    </g>
+    <g>
+      <circle cx="325" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+      <text x="325" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Contract</text>
+      <text x="325" y="303" fill="#98A6A3" font-size="14">精确版本</text>
+    </g>
+    <g>
+      <circle cx="545" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+      <text x="545" y="276" fill="#F4EFE4" font-size="22" font-weight="700">审批</text>
+      <text x="545" y="303" fill="#98A6A3" font-size="14">用户确认</text>
+    </g>
+    <g>
+      <circle cx="765" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+      <text x="765" y="276" fill="#F4EFE4" font-size="22" font-weight="700">执行</text>
+      <text x="765" y="303" fill="#98A6A3" font-size="14">已批准 worktree</text>
+    </g>
+    <g>
+      <circle cx="985" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+      <text x="985" y="276" fill="#F4EFE4" font-size="22" font-weight="700">验证</text>
+      <text x="985" y="303" fill="#98A6A3" font-size="14">独立检查</text>
+    </g>
+    <g>
+      <circle cx="1205" cy="218" r="20" fill="#B7EF4A"/>
+      <path d="M1196 218l6 6 12-14" fill="none" stroke="#172329" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="1205" y="276" fill="#F4EFE4" font-size="22" font-weight="700">完成</text>
+      <text x="1205" y="303" fill="#98A6A3" font-size="14">全部 MUST 通过</text>
+    </g>
+    <text x="1095" y="198" fill="#B7EF4A" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="13">通过</text>
+    <text x="895" y="443" fill="#98A6A3" font-family="Microsoft YaHei,Noto Sans SC,Arial,sans-serif" font-size="13">失败：在 worktree 中修正</text>
+  </g>
 </svg>

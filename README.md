@@ -2,9 +2,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-![Goat for OpenCode: authority goes out, evidence comes back](assets/readme/hero.svg)
+![GOAT: Better Goal for OpenCode](assets/readme/hero.svg)
 
-Goal operationalization, alignment, and testing for OpenCode.
+Goat adds a Contract-driven, independently verified Goal workflow to OpenCode.
 
 This release is an alpha preview. Use it with disposable branches or
 worktrees until your team has completed its own recovery and permission review.
@@ -16,9 +16,9 @@ executes it in an approved workspace through a dedicated Executor Session, and
 independently verifies every MUST criterion with a dedicated read-only Verifier
 Session.
 
-The core idea is an evidence loop: authority moves forward only through an
-exact Contract and native approval; evidence returns through an independent
-verification before the Goal can be complete.
+The workflow is deliberately explicit: a Goal becomes an exact Contract,
+waits for native approval, runs in the selected workspace, and is checked by an
+independent Verifier before completion.
 
 ## Requirements
 
@@ -42,7 +42,6 @@ directory (defaults to the platform data location plus `opencode-goat`).
 The package is published under the `alpha` dist-tag. Pin the exact version in
 production experiments after reviewing the changelog.
 
-
 ## Commands
 
 ```text
@@ -57,7 +56,7 @@ production experiments after reviewing the changelog.
 /goat help            short usage
 ```
 
-![Goat evidence loop workflow](assets/readme/workflow.svg)
+![Goat Goal workflow](assets/readme/workflow.svg)
 
 ## Roles
 

@@ -43,7 +43,6 @@ const allowed = new Set([
   "assets/brand/goat-mark.svg",
   "assets/brand/goat-wordmark.svg",
   "assets/readme/hero.svg",
-  "assets/readme/hero.zh-CN.svg",
   "assets/readme/workflow.svg",
   "assets/readme/workflow.zh-CN.svg",
   "assets/social/github-social-preview.svg",

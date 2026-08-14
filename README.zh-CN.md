@@ -2,9 +2,9 @@
 
 [English](README.md) | 简体中文
 
-![Goat for OpenCode：授权向前，证据回流](assets/readme/hero.zh-CN.svg)
+![GOAT：Better Goal for OpenCode](assets/readme/hero.svg)
 
-面向 OpenCode 的目标操作化、对齐与测试插件。
+Goat 为 OpenCode 提供一套由 Contract 驱动、带独立验证的 Goal 工作流。
 
 这是 alpha 预览版本。在完成团队自己的恢复与权限审查前，请只在可丢弃的
 分支或 worktree 中使用。
@@ -13,8 +13,8 @@ Goat 将 `/goat <意图>` 转换为持久化、经用户批准的 Goal Contract�
 在批准的 workspace 中通过专用 Executor Session 执行，并通过独立的 Verifier
 Session 验证每一项 MUST 标准。
 
-核心设计是证据闭环：执行权只能沿着精确 Contract 和原生审批向前流动；
-完成前，证据必须经过独立验证回流。
+工作流保持明确：Goal 形成精确的 Contract，经原生审批后在选定 workspace
+中执行，并在完成前由独立 Verifier 检查结果。
 
 ## 要求
 
@@ -54,7 +54,7 @@ dist-tag。
 
 ## 工作流
 
-![Goat 证据闭环工作流](assets/readme/workflow.zh-CN.svg)
+![Goat Goal 工作流](assets/readme/workflow.zh-CN.svg)
 
 1. Formulator 将用户意图整理为可观察的 outcome、范围、约束、假设和验证计划。
 2. 用户通过原生 Question 审批精确 Contract。

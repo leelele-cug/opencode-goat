@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.3 - 2026-08-14
+
+- Refined the public README, workflow visuals, and social preview around the
+  explicit Goal-to-Verification flow.
+- Kept internal development notes out of public repository and package
+  documentation.
+- Consolidated maintainer release guidance into `CONTRIBUTING.md`.
+
 ## 0.1.0-alpha.2 - 2026-08-09
 
 - Schema v8 and ten-round verification batches.

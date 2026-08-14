@@ -1,7 +1,7 @@
 {
   "name": "opencode-goat",
-  "version": "0.1.0-alpha.2",
-  "description": "Goal operationalization, alignment, and testing for OpenCode",
+  "version": "0.1.0-alpha.3",
+  "description": "Contract-driven Goal execution and verification for OpenCode",
   "type": "module",
   "license": "MIT",
   "author": "leelele-cug",
@@ -31,7 +31,7 @@
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
     "assets/**/*.svg",
-    "assets/**/*.png",
+    "assets/**/*.png"
   ],
   "exports": {
     "./server": {

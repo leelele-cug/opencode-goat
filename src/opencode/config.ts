@@ -21,7 +21,7 @@ export function registerGoatConfig(config: Config): void {
   config.command ??= {};
   if (config.command.goat) throw new Error("/goat command already exists. Goat will not override it.");
   config.command.goat = {
-    description: "Goal Operationalization, Alignment & Testing",
+    description: "Contract-driven Goal execution and verification for OpenCode",
     agent: "goat-formulator",
     template: "Process the /goat command exactly. Use Goat tools and native Questions; never edit before Contract approval.",
   };
