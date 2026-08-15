@@ -9,13 +9,12 @@ import { buildSnapshot, type WorkspaceSnapshot } from "../src/core/workspace.js"
 const platform = process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
 const projectDirectory = platform === "win32" ? "C:\\Project" : "/tmp/goat-project";
 const worktreeDirectory = platform === "win32" ? "C:\\Project\\goat-worktree" : "/tmp/goat-project/goat-worktree";
-const persistedProjectDirectory = platform === "win32" ? projectDirectory.toLowerCase() : projectDirectory;
 const persistedWorktreeDirectory = platform === "win32" ? worktreeDirectory.toLowerCase() : worktreeDirectory;
 const origin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory, worktreeOrigin: projectDirectory };
 const model = { providerID: "test-provider", id: "test-model" };
 
 function snapshot(commit = "a".repeat(40)): WorkspaceSnapshot {
-  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], rawDiff: "", platform });
+  return buildSnapshot({ head: commit, status: [], diff: [], untracked: [], platform });
 }
 
 type Fakes = {
@@ -55,7 +54,6 @@ function createFakes(overrides: Partial<Fakes> = {}): Fakes {
     create: async (input) => identity({ id: "child-session", parentID: input.parentID ?? null, directory: input.directory, agent: input.agent ?? null, model: input.model ?? null, metadata: input.metadata ?? null, title: input.title ?? null }),
     children: async () => [],
     promptAsync: async () => undefined,
-    diff: async () => [],
     message: async () => undefined,
     interrupt: async () => undefined,
     status: async () => "idle",
@@ -85,17 +83,16 @@ const proposeArgs = {
   constraintsReviewed: true,
   assumptionsReviewed: true,
   outcomeChangingQuestionsResolved: true,
-  workspaceAvailable: true,
   infeasibleCriterionIds: [],
 };
 
-async function createGoalWithApproval(runtime: ReturnType<typeof createRuntime>, workspace: "current" | "worktree" = "current"): Promise<string> {
+async function createGoalWithApproval(runtime: ReturnType<typeof createRuntime>): Promise<string> {
   const created = await runtime.orchestrator.createGoal({ sourceRequest: "runtime test", rootSessionId: "root-session", origin, model });
   if (!created.ok) throw new Error(created.error);
   const goalId = created.goalId;
   await runtime.orchestrator.proposeContract(
     { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
-    { ...proposeArgs, workspace },
+    proposeArgs,
     "proposal-op",
   );
   await bindQuestion(runtime, goalId, "call-1");
@@ -171,8 +168,8 @@ test("approval resolution activates the workspace and dispatches the Executor", 
   try {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
-    expect(runtime.store.getRun(goalId)?.executorSessionId).toBe("executor-child");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
+    expect(runtime.store.getCurrentRun(goalId)?.executorSessionId).toBe("executor-child");
     expect(prompts.length).toBe(1);
     expect(prompts[0]).toMatchObject({ agent: "goat-executor" });
   } finally { runtime.db.close(); }
@@ -188,6 +185,15 @@ test("guardGenericToolCall enforces the fixed role matrix for bound sessions", a
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "task", "call-z")).toMatchObject({ allowed: false });
      expect(await runtime.orchestrator.guardGenericToolCall("unrelated-session", "bash", "call-w")).toEqual({ allowed: false, error: "unbound-goat-agent" });
     expect(await runtime.orchestrator.guardGenericToolCall("root-session", "goat_state", "call-v")).toEqual({ allowed: true });
+  } finally { runtime.db.close(); }
+});
+
+test("unbound Sessions fail closed when identity cannot be established", async () => {
+  const runtime = createRuntime({
+    session: { ...createFakes().session, get: async () => { throw new Error("identity unavailable"); } },
+  });
+  try {
+    expect(await runtime.orchestrator.guardGenericToolCall("unknown-session", "bash", "call", { command: "bun test" }, projectDirectory)).toEqual({ allowed: false, error: "session-identity-unavailable" });
   } finally { runtime.db.close(); }
 });
 
@@ -207,11 +213,88 @@ test("worktree activation creates and dispatches only after readiness", async ()
     },
   });
   try {
-    const goalId = await createGoalWithApproval(runtime, "worktree");
+     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
     expect(order).toEqual(["baseline", "ready", "baseline", "prompt"]);
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
-    expect(runtime.store.getRun(goalId)?.workspacePath).toBe(persistedWorktreeDirectory);
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
+    expect(runtime.store.getCurrentRun(goalId)?.workspacePath).toBe(persistedWorktreeDirectory);
+  } finally { runtime.db.close(); }
+});
+
+test("completion snapshot failure blocks the FINALIZING Goal", async () => {
+  let captures = 0;
+  const runtime = createRuntime({
+    workspace: {
+      ...createFakes().workspace,
+      captureSnapshot: async () => {
+        captures += 1;
+        return captures === 3 ? { ok: false, error: "snapshot-failed" } : { ok: true, snapshot: snapshot() };
+      },
+    },
+  });
+  try {
+    const goalId = await createGoalWithApproval(runtime);
+    await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
+    const run = runtime.store.getCurrentRun(goalId)!;
+    const token = runtime.store.getOwnedFencingToken(goalId)!;
+    const evidence = runtime.store.recordEvidence(goalId, token, run.runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: run.executorSessionId! }, "capture-failure-evidence");
+    if (!evidence.ok) throw new Error(evidence.error);
+
+    const output = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: run.executorSessionId!, messageID: "m", agent: "goat-executor", directory: run.workspacePath!, worktree: run.workspacePath! }, "capture-failure-completion");
+    expect(JSON.parse(output)).toMatchObject({ status: "handoff-pending" });
+    await runtime.orchestrator.handleSessionIdle(run.executorSessionId!);
+    expect(runtime.store.getGoal(goalId)).toMatchObject({ state: "BLOCKED", blockerCode: "workspace-comparison-invalid" });
+    expect(runtime.store.getRecentAudit(goalId).find((event) => event.kind === "goal_blocked")).toMatchObject({ previousState: "FINALIZING_EXECUTION", nextState: "BLOCKED" });
+  } finally { runtime.db.close(); }
+});
+
+test("handoffs wait for idle events without interrupting the active tool call", async () => {
+  const sessions = new Map<string, SessionIdentity>();
+  const statuses = new Map<string, "idle" | "busy">();
+  let interrupts = 0;
+  const runtime = createRuntime({
+    session: {
+      ...createFakes().session,
+      get: async (id, directory) => sessions.get(id) ?? identity({ id, directory }),
+      children: async () => [...sessions.values()],
+      create: async (input) => {
+        const id = input.agent === "goat-verifier" ? "verifier-child" : "executor-child";
+        const created = identity({ id, parentID: "root-session", directory: input.directory, agent: input.agent ?? null, model: input.model ?? null, metadata: input.metadata ?? null, title: input.title ?? null });
+        sessions.set(id, created);
+        statuses.set(id, "busy");
+        return created;
+      },
+      status: async (id) => statuses.get(id) ?? "missing",
+      interrupt: async () => { interrupts += 1; },
+    },
+  });
+  try {
+    const goalId = await createGoalWithApproval(runtime);
+    await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
+    const run = runtime.store.getCurrentRun(goalId)!;
+    const evidence = runtime.store.recordEvidence(goalId, runtime.store.getOwnedFencingToken(goalId)!, run.runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: "executor-child" }, "idle-handoff-evidence");
+    if (!evidence.ok) throw new Error(evidence.error);
+
+    const completion = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: "executor-child", messageID: "completion-message", agent: "goat-executor", directory: run.workspacePath!, worktree: run.workspacePath! }, "idle-handoff-completion");
+    expect(JSON.parse(completion)).toMatchObject({ status: "handoff-pending" });
+    expect(runtime.store.getGoal(goalId)?.state).toBe("FINALIZING_EXECUTION");
+    await runtime.orchestrator.handleSessionIdle("executor-child");
+    expect(runtime.store.getGoal(goalId)?.state).toBe("FINALIZING_EXECUTION");
+    expect(interrupts).toBe(0);
+
+    statuses.set("executor-child", "idle");
+    await runtime.orchestrator.handleSessionIdle("executor-child");
+    expect(runtime.store.getGoal(goalId)?.state).toBe("VERIFYING");
+    expect(runtime.store.getSessionBinding("verifier-child")).toMatchObject({ role: "verifier" });
+
+    statuses.set("verifier-child", "busy");
+    const report = await runtime.orchestrator.recordVerifierReport({ toolId: "goat_verifier_report", sessionID: "verifier-child", messageID: "report-message", agent: "goat-verifier", directory: run.workspacePath!, worktree: run.workspacePath! }, [{ criterionId: "c", result: "pass", evidenceIds: [evidence.evidenceId] }], "idle-handoff-report");
+    expect(JSON.parse(report)).toMatchObject({ status: "handoff-pending", outcome: "PASS" });
+    expect(runtime.store.getGoal(goalId)?.state).toBe("FINALIZING_VERIFICATION");
+    statuses.set("verifier-child", "idle");
+    await runtime.orchestrator.handleSessionIdle("verifier-child");
+    expect(runtime.store.getGoal(goalId)?.state).toBe("COMPLETED");
+    expect(interrupts).toBe(0);
   } finally { runtime.db.close(); }
 });
 
@@ -220,10 +303,28 @@ test("an idle Executor cannot leave an active Run waiting forever", async () => 
   try {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
-    const run = runtime.store.getRun(goalId)!;
+    const run = runtime.store.getCurrentRun(goalId)!;
     await runtime.orchestrator.handleSessionIdle(run.executorSessionId!);
     expect(runtime.store.getGoal(goalId)).toMatchObject({ state: "BLOCKED", blockerCode: "executor-session-ended" });
-    expect(runtime.store.getRun(goalId)?.status).toBe("BLOCKED");
+  } finally { runtime.db.close(); }
+});
+
+test("pause closes Executor authority before capturing its checkpoint", async () => {
+  let interrupts = 0;
+  const runtime = createRuntime({
+    session: { ...createFakes().session, status: async () => "idle", interrupt: async () => { interrupts += 1; } },
+  });
+  try {
+    const goalId = await createGoalWithApproval(runtime);
+    await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
+    const run = runtime.store.getCurrentRun(goalId)!;
+    expect(await runtime.orchestrator.pause(goalId)).toEqual({ ok: true });
+    expect(runtime.store.getGoal(goalId)).toMatchObject({ state: "PAUSED", resumeState: "EXECUTING" });
+    expect(runtime.store.getCurrentRun(goalId)?.checkpoint).toBeNull();
+    expect(runtime.store.getSessionBinding(run.executorSessionId!)).toMatchObject({ role: "revoked" });
+    expect(interrupts).toBe(1);
+    await runtime.orchestrator.handleSessionIdle(run.executorSessionId!);
+    expect(runtime.store.getCurrentRun(goalId)?.checkpoint).not.toBeNull();
   } finally { runtime.db.close(); }
 });
 
@@ -242,9 +343,9 @@ test("recovery reconciles an unbound executor session and redelivers a missing m
   try {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
     await runtime.orchestrator.recoverProject();
-    expect(runtime.store.getRun(goalId)?.executorSessionId).toBe("executor-child");
+    expect(runtime.store.getCurrentRun(goalId)?.executorSessionId).toBe("executor-child");
   } finally { runtime.db.close(); }
 });
 
@@ -255,10 +356,10 @@ test("recovery completes a PREPARING Run that has no workspace path", async () =
     const token = runtime.store.getOwnedFencingToken(goalId)!;
     const approval = runtime.store.resolveApproval(goalId, token, "call-1", [["Approve and start"]]);
     expect(approval.ok && approval.action).toBe("approved");
-    expect(runtime.store.getRun(goalId)?.status).toBe("PREPARING");
+    expect(runtime.store.getGoal(goalId)?.state).toBe("PREPARING");
     await runtime.orchestrator.recoverProject();
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
-    expect(runtime.store.getRun(goalId)?.workspacePath).toBe(persistedProjectDirectory);
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
+     expect(runtime.store.getCurrentRun(goalId)?.workspacePath).toBe(persistedWorktreeDirectory);
   } finally { runtime.db.close(); }
 });
 
@@ -266,6 +367,10 @@ test("recovery binds a missing Verifier Session before delivery", async () => {
   const prompts: string[] = [];
   const sessions = new Map<string, SessionIdentity>();
   const runtime = createRuntime({
+    workspace: {
+      ...createFakes().workspace,
+      listWorktrees: async () => [{ name: "goat-id-8", path: worktreeDirectory }],
+    },
     session: {
       ...createFakes().session,
       get: async (id, directory) => sessions.get(id) ?? identity({ id, directory }),
@@ -280,12 +385,12 @@ test("recovery binds a missing Verifier Session before delivery", async () => {
   try {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
-    const run = runtime.store.getRun(goalId)!;
+    const run = runtime.store.getCurrentRun(goalId)!;
     const evidence = runtime.store.recordEvidence(goalId, runtime.store.getOwnedFencingToken(goalId)!, run.runId, "c", { source: "test", method: "inspect", expectedResult: "works", actualReference: "test://x", producer: run.executorSessionId! }, "recovery-verifier-evidence");
     expect(evidence.ok).toBe(true);
-    const proposed = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: run.executorSessionId!, messageID: "m", agent: "goat-executor", directory: projectDirectory, worktree: projectDirectory }, "recovery-verifier-completion");
-    expect(proposed).toContain("verification-started");
-    expect(runtime.store.getRun(goalId)?.status).toBe("VERIFYING");
+     const proposed = await runtime.orchestrator.proposeCompletion({ toolId: "goat_completion_propose", sessionID: run.executorSessionId!, messageID: "m", agent: "goat-executor", directory: run.workspacePath!, worktree: run.workspacePath! }, "recovery-verifier-completion");
+    expect(proposed).toContain("handoff-pending");
+    expect(runtime.store.getGoal(goalId)?.state).toBe("FINALIZING_EXECUTION");
     await runtime.orchestrator.recoverProject();
     expect(runtime.store.getSessionBinding("verifier-child")).toMatchObject({ role: "verifier" });
     expect(prompts).toContain("verifier-child");
@@ -297,11 +402,11 @@ test("a stale executor Session cannot control the Goal after revision", async ()
   try {
     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
     await runtime.orchestrator.revise(goalId, "change it");
     expect(runtime.store.getSessionBinding("child-session")).toMatchObject({ role: "revoked", revokedRole: "executor" });
     expect(await runtime.orchestrator.guardGenericToolCall("child-session", "edit", "stale-call", { filePath: "src/file.ts" })).toEqual({ allowed: false, error: "stale-goat-session" });
-    expect(runtime.store.getGoal(goalId)?.state).toBe("FORMING");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("PLANNING");
   } finally { runtime.db.close(); }
 });
 
@@ -320,7 +425,7 @@ test("cancellation preserves a clean abandoned worktree for explicit cleanup", a
     },
   });
   try {
-    const goalId = await createGoalWithApproval(runtime, "worktree");
+     const goalId = await createGoalWithApproval(runtime);
     await runtime.orchestrator.handleQuestionAfter("root-session", "call-1", { answers: [["Approve and start"]] }, "");
     expect(await runtime.orchestrator.cancel(goalId)).toEqual({ ok: true });
   } finally { runtime.db.close(); }

@@ -3,13 +3,15 @@ import { classifyExternalError } from "../core/ports.js";
 import { canonicalJson } from "../core/canonical.js";
 import { NativeApprovalQuestionSchema } from "../core/question.js";
 import { isApprovedVerificationCommand } from "../core/contract.js";
-import { DEFAULT_MAX_VERIFICATION_ATTEMPTS, type GoalState } from "../core/state.js";
+import { DEFAULT_MAX_VERIFICATION_ATTEMPTS, type WorkflowState } from "../core/state.js";
 import { ROLE_CAPABILITIES, type GoatRole, guardGenericTool, isRegisteredGoatTool, roleForAgent, sessionDenyRules, validateGoatToolAccess } from "../core/role-capabilities.js";
-import { addedPatchContentHash, assertExecutorOwnsSnapshot, assertSnapshotUnchanged, canonicalizeExecutorDiff, isWorkspaceClean, normalizeWorkspacePath, validateWorkspaceToolArguments, type CanonicalDiffEntry, type WorkspaceSnapshot } from "../core/workspace.js";
+import { assertHeadUnchanged, assertSnapshotUnchanged, isWorkspaceClean, validateWorkspaceToolArguments, type WorkspaceSnapshot } from "../core/workspace.js";
 import type { BlockerCode } from "../core/errors.js";
 import type { Store, GoalView, RunView, DispatchView, ApprovalAttemptView, SessionBinding } from "../store/store.js";
 import { persistedPath } from "../store/store.js";
+import { SCHEMA_VERSION } from "../store/schema.js";
 import type { GoalOrigin } from "./process-context.js";
+import { requiresLiveLease } from "./invocation-policy.js";
 
 type Platform = "win32" | "darwin" | "linux";
 type Result = { ok: true } | { ok: false; error: string };
@@ -100,10 +102,10 @@ export class Orchestrator {
     return this.store.getSessionBindingForProject(sessionId, this.projectId) ?? null;
   }
 
-  async getDoctorStatus(sessionId: string, origin: GoalOrigin): Promise<{ readonly schemaVersion: 8; readonly projectDirectory: string; readonly worktreeOrigin: string; readonly git: { readonly isGit: boolean; readonly isClean: boolean }; readonly binding: SessionBinding | null }> {
+  async getDoctorStatus(sessionId: string, origin: GoalOrigin): Promise<{ readonly schemaVersion: number; readonly projectDirectory: string; readonly worktreeOrigin: string; readonly git: { readonly isGit: boolean; readonly isClean: boolean }; readonly binding: SessionBinding | null }> {
     if (origin.projectId !== this.projectId) throw new Error("project-context-mismatch");
     return {
-      schemaVersion: 8,
+      schemaVersion: SCHEMA_VERSION,
       projectDirectory: origin.projectDirectory,
       worktreeOrigin: origin.worktreeOrigin,
       git: await this.workspace.probeGit(origin.projectDirectory),
@@ -139,14 +141,11 @@ export class Orchestrator {
       const tokenResult = await this.withToken(goalId);
       if (!tokenResult.ok) return tokenResult;
       const goal = this.store.getGoal(goalId);
-      const run = this.store.getRun(goalId);
-       if (!goal || goal.state !== "ACTIVE" || !run || run.status !== "ACTIVE" || !run.workspacePath) return this.store.pauseGoal(goalId, tokenResult.token);
-      if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
-       const snapshot = await this.captureSnapshot(run.workspacePath);
-       if (!snapshot.ok) return this.store.blockGoal(goalId, tokenResult.token, "workspace-comparison-invalid", snapshot.error, { state: "ACTIVE", runId: run.runId });
-       const paused = this.store.pauseGoal(goalId, tokenResult.token, snapshot.snapshot);
-       if (paused.ok) await this.interruptSession(run.executorSessionId, run.workspacePath);
-       return paused;
+      const run = this.store.getCurrentRun(goalId);
+      if (!goal || goal.state !== "EXECUTING" || !run || !run.workspacePath) return { ok: false, error: "invalid-transition" };
+      const paused = this.store.pauseGoal(goalId, tokenResult.token);
+      if (paused.ok) await this.interruptSession(run.executorSessionId, run.workspacePath);
+      return paused;
     });
   }
 
@@ -154,7 +153,7 @@ export class Orchestrator {
     return this.forGoal(goalId, async () => {
       const goal = this.store.getGoal(goalId);
       if (!goal) return { ok: false, error: "goal-not-found" };
-      if (goal.state === "AWAITING_APPROVAL") {
+       if (goal.state === "AWAITING_APPROVAL") {
          await this.reconcileApprovalNow(goalId, true);
         const reissue = this.store.listPendingDispatches(goalId).find((dispatch) => dispatch.kind === "approval-reissue" && dispatch.status === "PENDING");
         if (reissue) await this.deliverDispatch(reissue.dispatchId);
@@ -169,42 +168,50 @@ export class Orchestrator {
         const delivery = await this.deliverDispatch(resumed.dispatchId);
         return { ok: true, delivery: delivery.ok ? "sent" : "uncertain" };
       }
-      const run = this.store.getRun(goalId);
+      const run = this.store.getCurrentRun(goalId);
       if (!run) return { ok: false, error: "run-not-found" };
-       const preparationBlockers = new Set(["workspace-preparation-failed", "workspace-head-changed", "workspace-dirty-at-activation", "workspace-comparison-invalid"]);
-       if (goal.state === "BLOCKED" && run.status === "BLOCKED" && preparationBlockers.has(goal.blockerCode ?? "")) {
-         const tokenResult = await this.withToken(goalId);
-         if (!tokenResult.ok) return tokenResult;
-         const requested = this.store.requestPreparationRetry(goalId, tokenResult.token, run.runId);
-         if (!requested.ok) return requested;
-         const activated = await this.activateApprovedNow(goalId);
-         return { ok: true, delivery: activated.ok ? "sent" : activated.error.includes("uncertain") ? "uncertain" : "failed" };
-       }
-       if (!run.workspacePath || run.status === "BLOCKED" && !run.workspacePath) {
-         if (goal.state === "BLOCKED" && run.status === "BLOCKED" && !run.workspacePath) {
-          const tokenResult = await this.withToken(goalId);
-          if (!tokenResult.ok) return tokenResult;
-          const requested = this.store.requestPreparationRetry(goalId, tokenResult.token, run.runId);
-          if (!requested.ok) return requested;
-           const activated = await this.activateApprovedNow(goalId);
-          return { ok: true, delivery: activated.ok ? "sent" : activated.error.includes("uncertain") ? "uncertain" : "failed" };
-        }
-        return { ok: false, error: "run-workspace-missing" };
-      }
-       if (run.status === "PREPARING") return { ok: false, error: "run-not-prepared" };
       const tokenResult = await this.withToken(goalId);
       if (!tokenResult.ok) return tokenResult;
-      if (run.workspaceStrategy === "worktree") {
-        const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName && samePath(worktree.path, run.workspacePath!));
-        if (matches.length !== 1) return { ok: false, error: "resume-worktree-missing-or-changed" };
+      if (goal.state === "PREPARING") {
+        const activated = await this.activateApprovedNow(goalId);
+        return activated.ok ? { ok: true, delivery: "sent" } : activated;
       }
+      if (goal.state === "BLOCKED" && goal.resumeState === "PREPARING") {
+        const requested = this.store.resumePreparation(goalId, tokenResult.token, run.runId);
+        if (!requested.ok) return requested;
+        const activated = await this.activateApprovedNow(goalId);
+        return activated.ok ? { ok: true, delivery: "sent" } : activated;
+      }
+      if (goal.state === "BLOCKED" && (goal.resumeState === "FINALIZING_EXECUTION" || goal.resumeState === "FINALIZING_VERIFICATION")) {
+        const target = goal.resumeState;
+        const resumed = this.store.resumeFinalization(goalId, tokenResult.token, run.runId, target);
+        if (!resumed.ok) return resumed;
+        if (target === "FINALIZING_EXECUTION") await this.reconcileFinalizingExecution(goalId, run);
+        else await this.reconcileFinalizingVerification(goalId, run);
+        return { ok: true };
+      }
+      if (goal.state === "BLOCKED" && goal.resumeState === "VERIFYING") {
+        if (!run.workspacePath || !run.verificationSnapshot) return { ok: false, error: "run-workspace-missing" };
+        const observed = await this.captureSnapshot(run.workspacePath);
+        if (!observed.ok) return { ok: false, error: observed.error };
+        const unchanged = assertSnapshotUnchanged(run.verificationSnapshot, observed.snapshot);
+        if (!unchanged.ok) return { ok: false, error: "resume-workspace-missing-or-changed" };
+        const resumed = this.store.resumeVerification(goalId, tokenResult.token, run.runId);
+        if (!resumed.ok) return resumed;
+        await this.ensureVerifierSession(goalId, run.runId, resumed.dispatchId, resumed.attempt);
+        const delivered = await this.deliverDispatch(resumed.dispatchId);
+        return { ok: true, delivery: delivered.ok ? "sent" : "uncertain" };
+      }
+      if (!((goal.state === "PAUSED" && goal.resumeState === "EXECUTING") || (goal.state === "BLOCKED" && goal.resumeState === "EXECUTING"))) return { ok: false, error: "invalid-transition" };
+      if (!run.workspacePath) return { ok: false, error: "run-workspace-missing" };
+       const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName && samePath(worktree.path, run.workspacePath!));
+       if (matches.length !== 1) return { ok: false, error: "resume-worktree-missing-or-changed" };
       if (!(await this.workspace.probeGit(run.workspacePath)).isGit) return { ok: false, error: "resume-workspace-not-ready" };
       if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
        const snapshot = await this.captureSnapshot(run.workspacePath);
        if (!snapshot.ok) return { ok: false, error: "resume-workspace-not-validated" };
        if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
-       const executorDiff = await this.captureExecutorDiff(run, snapshot.snapshot);
-      const resumed = this.store.resumeAndDispatch(goalId, tokenResult.token, run.runId, snapshot.snapshot, executorDiff);
+       const resumed = this.store.resumeAndDispatch(goalId, tokenResult.token, run.runId, snapshot.snapshot);
       if (!resumed.ok) return resumed;
       await this.ensureExecutorSession(goalId, run.runId);
       const delivered = await this.deliverDispatch(resumed.dispatchId);
@@ -250,7 +257,15 @@ export class Orchestrator {
     return Promise.resolve(JSON.stringify(projection));
   }
 
-  proposeContract(context: ToolCallContext, args: { outcome: string; included: string[]; excluded: string[]; constraints: string[]; assumptions: string[]; workspace: "current" | "worktree"; criteria: { id: string; priority: "must" | "should"; description: string; verification: ({ kind: "inspection"; description: string } | { kind: "command"; command: string })[] }[]; outcomeObservable: boolean; constraintsReviewed: boolean; assumptionsReviewed: boolean; outcomeChangingQuestionsResolved: boolean; workspaceAvailable: boolean; infeasibleCriterionIds: string[] }, operationKey: string): Promise<string> {
+  preauthorizeGoatTool(context: ToolCallContext): Result {
+    const binding = this.getBindingForSession(context.sessionID);
+    if (!binding || binding.role === "revoked") return { ok: false, error: "stale-goat-session" };
+    const role = roleForAgent(context.agent);
+    if (!role || bindingRole(binding) !== role) return { ok: false, error: "configured-goat-agent-required" };
+    return this.authorizeTool(binding, role, context);
+  }
+
+  proposeContract(context: ToolCallContext, args: { outcome: string; included: string[]; excluded: string[]; constraints: string[]; assumptions: string[]; criteria: { id: string; priority: "must" | "should"; description: string; verification: ({ kind: "inspection"; description: string } | { kind: "command"; command: string })[] }[]; outcomeObservable: boolean; constraintsReviewed: boolean; assumptionsReviewed: boolean; outcomeChangingQuestionsResolved: boolean; infeasibleCriterionIds: string[] }, operationKey: string): Promise<string> {
     return this.forGoal(this.goalIdFor(context), async () => {
       const binding = this.getBindingForSession(context.sessionID);
       const goalId = binding?.goal.goalId ?? "";
@@ -267,14 +282,12 @@ export class Orchestrator {
         scope: { included: args.included, excluded: args.excluded },
         constraints: args.constraints,
         assumptions: args.assumptions,
-        workspace: args.workspace,
-      }, args.criteria, {
+       }, args.criteria, {
         outcomeObservable: args.outcomeObservable,
         constraintsReviewed: args.constraintsReviewed,
         assumptionsReviewed: args.assumptionsReviewed,
         outcomeChangingQuestionsResolved: args.outcomeChangingQuestionsResolved,
-        workspaceAvailable: args.workspaceAvailable,
-        infeasibleCriterionIds: args.infeasibleCriterionIds,
+         infeasibleCriterionIds: args.infeasibleCriterionIds,
       }, operationKey, preflight.preflight);
       if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
       if (!result.ready) return JSON.stringify({ status: "ready-gate-blocked", dimensions: result.dimensions });
@@ -306,40 +319,14 @@ export class Orchestrator {
       const run = authorized.run;
       if (!run.workspacePath) {
         const tokenResult = await this.withToken(goalId);
-        if (tokenResult.ok) this.store.blockGoal(goalId, tokenResult.token, "run-workspace-missing", "run-workspace-missing", { state: "ACTIVE", runId: run.runId });
+         if (tokenResult.ok) this.store.blockGoal(goalId, tokenResult.token, "run-workspace-missing", "run-workspace-missing", { state: "EXECUTING", runId: run.runId });
         return JSON.stringify({ status: "error", error: "run-workspace-missing" });
       }
-       const tokenResult = await this.withToken(goalId);
-       if (!tokenResult.ok) return JSON.stringify({ status: "error", error: tokenResult.error });
-       const finalizing = this.store.beginFinalization(goalId, tokenResult.token, run.runId);
-       if (!finalizing.ok) return JSON.stringify({ status: "error", error: finalizing.error });
-       let finalSnapshot;
-       try {
-        finalSnapshot = await this.captureSnapshot(run.workspacePath);
-        if (!finalSnapshot.ok) throw new Error(finalSnapshot.error);
-        if (!this.store.renewLease(goalId, tokenResult.token).ok) return JSON.stringify({ status: "error", error: "stale-lease" });
-      } catch (error) {
-        const reason = error instanceof Error ? `verification-context-capture-failed:${error.message}` : "verification-context-capture-failed";
-        this.store.blockGoal(goalId, tokenResult.token, "workspace-comparison-invalid", reason, { state: "ACTIVE", runId: run.runId });
-        return JSON.stringify({ status: "error", error: reason });
-      }
-        let executorDiff: readonly CanonicalDiffEntry[];
-        try {
-          executorDiff = await this.captureExecutorDiff(run, finalSnapshot.snapshot);
-        } catch (error) {
-          const reason = error instanceof Error ? `verification-context-capture-failed:${error.message}` : "verification-context-capture-failed";
-          this.store.blockGoal(goalId, tokenResult.token, "workspace-comparison-invalid", reason, { state: "ACTIVE", runId: run.runId });
-          return JSON.stringify({ status: "error", error: reason });
-        }
-       if (!this.store.renewLease(goalId, tokenResult.token).ok) return JSON.stringify({ status: "error", error: "stale-lease" });
-      const proposal = this.store.proposeCompletion(goalId, tokenResult.token, run.runId, finalSnapshot.snapshot, executorDiff, operationKey);
-      if (!proposal.ok) return JSON.stringify({ status: "error", error: proposal.error, gaps: proposal.gaps });
-       await this.interruptSession(run.executorSessionId, run.workspacePath);
-       await this.ensureVerifierSession(goalId, run.runId, proposal.dispatchId, proposal.attempt);
-      await this.deliverDispatch(proposal.dispatchId);
-      const dispatch = this.store.getDispatch(proposal.dispatchId);
-       if (dispatch && ["SENT", "STARTED"].includes(dispatch.status)) return JSON.stringify({ status: "verification-started", attempt: proposal.attempt });
-       return JSON.stringify({ status: "error", error: dispatch?.status === "FAILED" ? "verifier-prompt-rejected" : "verifier-prompt-delivery-uncertain" });
+      const tokenResult = await this.withToken(goalId);
+      if (!tokenResult.ok) return JSON.stringify({ status: "error", error: tokenResult.error });
+       const finalizing = this.store.beginFinalization(goalId, tokenResult.token, run.runId, operationKey);
+       if (!finalizing.ok) return JSON.stringify({ status: "error", error: finalizing.error, gaps: finalizing.gaps });
+       return JSON.stringify({ status: "handoff-pending", next: "verification" });
     });
   }
 
@@ -349,64 +336,25 @@ export class Orchestrator {
       if (!authorized.ok) return JSON.stringify({ status: "error", error: authorized.error });
       const tokenResult = await this.withToken(authorized.goal.goalId);
       if (!tokenResult.ok) return JSON.stringify({ status: "error", error: tokenResult.error });
-       const result = this.store.blockGoal(authorized.goal.goalId, tokenResult.token, "executor-blocked", reason, { state: "ACTIVE", runId: authorized.run.runId });
+        const result = this.store.blockGoal(authorized.goal.goalId, tokenResult.token, "executor-blocked", reason, { state: "EXECUTING", runId: authorized.run.runId });
        if (result.ok) await this.interruptRunSessions(authorized.run);
        return JSON.stringify(result);
     });
   }
 
-  recordVerifierReport(context: ToolCallContext, findings: { criterionId: string; result: "pass" | "fail" | "blocked"; evidenceIds: string[]; note?: string | undefined }[]): Promise<string> {
+  recordVerifierReport(context: ToolCallContext, findings: { criterionId: string; result: "pass" | "fail" | "blocked"; evidenceIds: string[]; note?: string | undefined }[], operationKey: string): Promise<string> {
     return this.forGoal(this.goalIdFor(context), async () => {
         const binding = this.getBindingForSession(context.sessionID);
         if (!binding || binding.role !== "verifier" || roleForAgent(context.agent) !== "verifier") return JSON.stringify({ status: "error", error: "configured-goat-agent-required" });
         const access = this.authorizeTool(binding, "verifier", context);
         if (!access.ok) return JSON.stringify({ status: "error", error: access.error });
-       if (binding.goal.state !== "VERIFYING" || binding.run.status !== "VERIFYING" || binding.result.outcome !== "PENDING") return JSON.stringify({ status: "error", error: "stale-goat-session" });
-       const tokenResult = await this.withToken(binding.goal.goalId);
-       if (!tokenResult.ok) return JSON.stringify({ status: "error", error: tokenResult.error });
-       if (!binding.run.finalSnapshot || !binding.run.workspacePath) return JSON.stringify({ status: "error", error: "verification-workspace-baseline-missing" });
-       const observed = await this.captureSnapshot(binding.run.workspacePath);
-       if (!observed.ok) {
-         this.store.blockGoal(binding.goal.goalId, tokenResult.token, "workspace-changed-during-verification", observed.error, { state: "VERIFYING", runId: binding.run.runId });
-         return JSON.stringify({ status: "error", error: "workspace-changed-during-verification" });
-       }
-       const unchanged = assertSnapshotUnchanged(binding.run.finalSnapshot, observed.snapshot);
-       if (!unchanged.ok) {
-         this.store.blockGoal(binding.goal.goalId, tokenResult.token, "workspace-changed-during-verification", unchanged.detail, { state: "VERIFYING", runId: binding.run.runId });
-         return JSON.stringify({ status: "error", error: "workspace-changed-during-verification" });
-       }
-       if (!this.store.renewLease(binding.goal.goalId, tokenResult.token).ok) return JSON.stringify({ status: "error", error: "stale-lease" });
-       const result = this.store.recordVerificationAndMaybeRemediate(binding.goal.goalId, tokenResult.token, binding.run.runId, context.sessionID, findings, observed.snapshot);
-        if (!result.ok) {
-          if (result.error === "workspace-changed-during-verification") this.store.blockGoal(binding.goal.goalId, tokenResult.token, "workspace-changed-during-verification", result.error, { state: "VERIFYING", runId: binding.run.runId });
-          return JSON.stringify({ status: "error", error: result.error });
-        }
-        await this.interruptSession(context.sessionID, binding.run.workspacePath);
-        if (result.outcome === "VERIFYING") {
-         const finalCheck = await this.captureSnapshot(binding.run.workspacePath);
-         if (!finalCheck.ok) {
-           this.store.blockGoal(binding.goal.goalId, tokenResult.token, "workspace-changed-during-verification", finalCheck.error, { state: "VERIFYING", runId: binding.run.runId });
-           return JSON.stringify({ status: "error", error: "workspace-changed-during-verification" });
-         }
-         const finalized = this.store.completeVerifiedRun(binding.goal.goalId, tokenResult.token, binding.run.runId, finalCheck.snapshot);
-         if (!finalized.ok) return JSON.stringify({ status: "error", error: finalized.error });
-         this.notify({ title: "Goat completed", message: "Independent verification passed every MUST criterion.", variant: "success" });
-         return JSON.stringify({ status: "recorded", outcome: "COMPLETED", attempt: result.attempt });
-       }
-       if (result.outcome === "COMPLETED") {
-        this.notify({ title: "Goat completed", message: "Independent verification passed every MUST criterion.", variant: "success" });
-        return JSON.stringify({ status: "recorded", outcome: result.outcome, attempt: result.attempt });
-      }
-       if (result.outcome === "BLOCKED") {
-        this.notify({ title: "Goat blocked", message: "Verification could not pass within the allowed attempts.", variant: "error" });
-        return JSON.stringify({ status: "recorded", outcome: result.outcome, attempt: result.attempt });
-      }
-      if (!result.dispatchId || !result.messageId) return JSON.stringify({ status: "error", error: "remediation-dispatch-missing" });
-      const delivered = await this.deliverDispatch(result.dispatchId);
-       const batch = Math.floor((result.attempt - 1) / DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1;
-       const round = ((result.attempt - 1) % DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1;
-       this.notify({ title: `Verification batch ${batch}, round ${round}/${DEFAULT_MAX_VERIFICATION_ATTEMPTS} failed`, message: "Findings returned to the Executor. No changes were discarded.", variant: "warning" });
-       return JSON.stringify({ status: "recorded", outcome: result.outcome, attempt: result.attempt, delivery: delivered.ok ? "sent" : delivered.error === "executor-prompt-rejected" ? "failed" : "uncertain" });
+        if (binding.goal.state !== "VERIFYING" || binding.result.outcome !== "PENDING") return JSON.stringify({ status: "error", error: "stale-goat-session" });
+        const tokenResult = await this.withToken(binding.goal.goalId);
+        if (!tokenResult.ok) return JSON.stringify({ status: "error", error: tokenResult.error });
+        if (!this.store.renewLease(binding.goal.goalId, tokenResult.token).ok) return JSON.stringify({ status: "error", error: "stale-lease" });
+        const result = this.store.recordVerificationReport(binding.goal.goalId, tokenResult.token, binding.run.runId, context.sessionID, findings, operationKey);
+        if (!result.ok) return JSON.stringify({ status: "error", error: result.error });
+        return JSON.stringify({ status: "handoff-pending", outcome: result.outcome, attempt: result.attempt });
     });
   }
 
@@ -417,7 +365,7 @@ export class Orchestrator {
     if (binding?.role === "revoked") return Promise.resolve({ allowed: false, error: "stale-goat-session" });
     if (isRegisteredGoatTool(toolId)) {
       if (!binding) return Promise.resolve({ allowed: false, error: "goat-session-not-bound" });
-      if (binding.role !== "root" && !["ACTIVE", "VERIFYING", "PAUSED"].includes(binding.run.status)) return Promise.resolve({ allowed: false, error: "stale-goat-session" });
+       if (binding.role !== "root" && !["EXECUTING", "VERIFYING"].includes(binding.goal.state)) return Promise.resolve({ allowed: false, error: "stale-goat-session" });
       const role = bindingRole(binding);
       const decision = validateGoatToolAccess({
         toolId,
@@ -435,14 +383,11 @@ export class Orchestrator {
         try {
           const identity = await this.session.get(sessionID, directory ?? "");
           if (identity.agent && roleForAgent(identity.agent)) return { allowed: false, error: "unbound-goat-agent" };
-        } catch {
-          // Unrelated Sessions are not owned by Goat. Let OpenCode handle
-          // their lifecycle if identity inspection is unavailable.
-        }
+        } catch { return { allowed: false, error: "session-identity-unavailable" }; }
         return { allowed: true };
       })();
     }
-    if (binding.role !== "root" && !["ACTIVE", "VERIFYING", "PAUSED"].includes(binding.run.status)) {
+    if (binding.role !== "root" && !["EXECUTING", "VERIFYING"].includes(binding.goal.state)) {
       return Promise.resolve({ allowed: false, error: "stale-goat-session" });
     }
     return (async () => {
@@ -455,10 +400,13 @@ export class Orchestrator {
       }
       const verified = this.verifySessionIdentity(binding, identity, expectedDirectory);
       if (!verified.ok) return { allowed: false, error: verified.error };
+      if (requiresLiveLease(bindingRole(binding), toolId) && !this.store.ownsLease(binding.goal.goalId)) return { allowed: false, error: "stale-lease" };
       if (binding.role === "verifier" && toolId === "bash") {
         const command = extractBashCommand(questionArgs);
         const revision = binding.goal.currentRevision === null ? undefined : this.store.getRevision(binding.goal.goalId, binding.goal.currentRevision);
         if (!command || !revision || !isApprovedVerificationCommand(revision.criteria, command)) return { allowed: false, error: "verifier-command-not-approved" };
+        const target = validateWorkspaceToolArguments(toolId, questionArgs, expectedDirectory, this.platform);
+        if (!target.ok) return { allowed: false, error: target.error };
       }
       if (binding.role === "executor" && ["write", "edit", "apply_patch", "bash"].includes(toolId)) {
         const target = validateWorkspaceToolArguments(toolId, questionArgs, expectedDirectory, this.platform);
@@ -529,37 +477,47 @@ export class Orchestrator {
   }
 
   handleSessionIdle(sessionID: string): Promise<void> {
-    return this.handleSessionTerminal(sessionID, "executor-session-ended", "executor-session-idle-before-completion", "verifier-session-ended");
+    const binding = this.getBindingForSession(sessionID);
+    if (!binding || binding.role === "root") return Promise.resolve();
+    return this.forGoal(binding.goal.goalId, async () => {
+      const current = this.getBindingForSession(sessionID);
+      if (!current || current.role === "root") return;
+      const goal = this.store.getGoal(current.goal.goalId);
+      const run = this.store.getCurrentRun(current.goal.goalId);
+      if (!goal || !run) return;
+      if (goal.state === "FINALIZING_EXECUTION" && current.role === "revoked" && current.revokedRole === "executor") await this.reconcileFinalizingExecution(goal.goalId, run);
+      else if (goal.state === "FINALIZING_VERIFICATION" && current.role === "revoked" && current.revokedRole === "verifier") await this.reconcileFinalizingVerification(goal.goalId, run);
+      else if (goal.state === "PAUSED" && current.role === "revoked" && current.revokedRole === "executor") await this.reconcilePause(goal.goalId, run);
+      else if (goal.state === "EXECUTING" && current.role === "executor") {
+        const token = await this.withToken(goal.goalId);
+        if (token.ok) this.store.blockGoal(goal.goalId, token.token, "executor-session-ended", "executor-session-idle-before-completion", { state: "EXECUTING", runId: run.runId });
+      } else if (goal.state === "VERIFYING" && current.role === "verifier") {
+        const token = await this.withToken(goal.goalId);
+        if (token.ok) this.store.blockGoal(goal.goalId, token.token, "verifier-session-ended", "verifier-session-idle-before-report", { state: "VERIFYING", runId: run.runId });
+      }
+    });
   }
 
   handleSessionError(sessionID: string): Promise<void> {
-    return this.handleSessionTerminal(sessionID, "session-error", "opencode-session-error", "session-error");
-  }
-
-  private handleSessionTerminal(sessionID: string, executorCode: BlockerCode, reason: string, verifierCode: BlockerCode): Promise<void> {
     const binding = this.getBindingForSession(sessionID);
-    if (!binding || binding.role === "root" || binding.role === "revoked") return Promise.resolve();
+    if (!binding || binding.role === "root") return Promise.resolve();
     return this.forGoal(binding.goal.goalId, async () => {
       const current = this.getBindingForSession(sessionID);
       if (!current || current.role === "root" || current.role === "revoked") return;
-      const activeExecutor = current.role === "executor" && current.run.status === "ACTIVE" && current.goal.state === "ACTIVE";
-      const activeVerifier = current.role === "verifier" && current.run.status === "VERIFYING" && current.goal.state === "VERIFYING";
-      if (!activeExecutor && !activeVerifier) return;
-      const tokenResult = await this.withToken(current.goal.goalId);
-      if (!tokenResult.ok) return;
-      const dispatch = this.store.getDispatchForSession(sessionID);
-      if (dispatch) this.store.markDispatchFailed(dispatch.dispatchId, tokenResult.token, reason);
-      const code = activeExecutor ? executorCode : verifierCode;
-      const expectedState = activeExecutor ? "ACTIVE" : "VERIFYING";
-      this.store.blockGoal(current.goal.goalId, tokenResult.token, code, reason, { state: expectedState, runId: current.run.runId });
-      this.notify({ title: "Goat blocked", message: reason, variant: "error" }, current.goal.projectDirectory);
+      const goal = this.store.getGoal(current.goal.goalId);
+      const run = this.store.getCurrentRun(current.goal.goalId);
+      const token = await this.withToken(current.goal.goalId);
+      if (!goal || !run || !token.ok) return;
+      const ownsPhase = goal.state === "EXECUTING" && current.role === "executor" || goal.state === "VERIFYING" && current.role === "verifier";
+      if (!ownsPhase) return;
+      this.store.blockGoal(goal.goalId, token.token, "session-error", "opencode-session-error", { state: goal.state, runId: run.runId });
     });
   }
 
   handleWorktreeReady(name: string): Promise<void> {
     const matches = this.store.listRecoverableGoalsForProject(this.projectId).filter((goal) => {
-      const run = this.store.getRun(goal.goalId);
-      return run?.worktreeName === name && run.status === "PREPARING" && !!run.workspacePath && !run.baseline;
+       const run = this.store.getCurrentRun(goal.goalId);
+       return run?.worktreeName === name && goal.state === "PREPARING" && !!run.workspacePath && !run.baseline;
     });
     const result = Promise.all(matches.map((goal) => this.forGoal(goal.goalId, () => this.continueWorktreeActivation(goal.goalId))));
     return result.then(() => undefined);
@@ -580,28 +538,25 @@ export class Orchestrator {
   private async activateApprovedNow(goalId: string): Promise<Result> {
     const tokenResult = await this.withToken(goalId);
     if (!tokenResult.ok) return tokenResult;
-    const run = this.store.getRun(goalId);
+    const run = this.store.getCurrentRun(goalId);
     const goal = this.store.getGoal(goalId);
-    if (!run || !goal || !["PREPARING", "BLOCKED"].includes(run.status)) return { ok: false, error: "run-not-prepared" };
+     if (!run || !goal || goal.state !== "PREPARING") return { ok: false, error: "run-not-prepared" };
     const attempt = this.store.getApprovalAttempt(run.approvalAttemptId);
     if (!attempt || attempt.status !== "APPROVED") return { ok: false, error: "approval-not-approved" };
     let directory = goal.projectDirectory;
     let pendingReady: (() => Promise<void>) | undefined;
     try {
-      if (run.workspaceStrategy === "worktree") {
-        if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
-        if (!run.worktreeName) return { ok: false, error: "stable-worktree-name-missing" };
-        const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName);
-        if (matches.length > 1) return this.failPreparation(goalId, tokenResult.token, run.runId, "multiple-stable-worktrees", "multiple-stable-worktrees");
-        if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
-        if (matches[0]) {
-          directory = matches[0].path;
-          if (run.workspacePath && !samePath(run.workspacePath, directory)) return { ok: false, error: "stable-worktree-path-changed" };
-          } else {
-            const created = await this.workspace.createWorktree(goal.projectDirectory, run.worktreeName);
-            directory = created.path;
-             pendingReady = created.waitUntilReady;
-        }
+      if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
+      const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName);
+      if (matches.length > 1) return this.failPreparation(goalId, tokenResult.token, run.runId, "multiple-stable-worktrees", "multiple-stable-worktrees");
+      if (!this.store.renewLease(goalId, tokenResult.token).ok) return { ok: false, error: "stale-lease" };
+      if (matches[0]) {
+        directory = matches[0].path;
+        if (run.workspacePath && !samePath(run.workspacePath, directory)) return { ok: false, error: "stable-worktree-path-changed" };
+      } else {
+        const created = await this.workspace.createWorktree(goal.projectDirectory, run.worktreeName);
+        directory = created.path;
+        pendingReady = created.waitUntilReady;
       }
       const prepared = this.store.recordWorkspacePrepared(goalId, tokenResult.token, run.runId, directory);
       if (!prepared.ok) return prepared;
@@ -621,10 +576,10 @@ export class Orchestrator {
       return this.deliverDispatch(activated.dispatchId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "workspace-preparation-failed";
-       const currentRun = this.store.getRun(goalId);
-      if (currentRun?.status === "ACTIVE") {
+        const currentRun = this.store.getCurrentRun(goalId);
+       if (this.store.getGoal(goalId)?.state === "EXECUTING" && currentRun) {
         const token = this.store.getOwnedFencingToken(goalId);
-        if (token !== undefined) this.store.blockGoal(goalId, token, "workspace-preparation-failed", reason, { state: "ACTIVE", runId: run.runId });
+         if (token !== undefined) this.store.blockGoal(goalId, token, "workspace-preparation-failed", reason, { state: "EXECUTING", runId: run.runId });
       } else {
         this.failPreparation(goalId, tokenResult.token, run.runId, "workspace-preparation-failed", reason);
       }
@@ -636,9 +591,9 @@ export class Orchestrator {
   private async continueWorktreeActivation(goalId: string): Promise<void> {
     const tokenResult = await this.withToken(goalId);
     if (!tokenResult.ok) return;
-    const run = this.store.getRun(goalId);
+    const run = this.store.getCurrentRun(goalId);
     const goal = this.store.getGoal(goalId);
-    if (!run || !goal || run.status !== "PREPARING" || !run.workspacePath || run.baseline || run.workspaceStrategy !== "worktree") return;
+     if (!run || !goal || goal.state !== "PREPARING" || !run.workspacePath || run.baseline) return;
     await this.activateApprovedNow(goalId);
   }
 
@@ -660,11 +615,12 @@ export class Orchestrator {
 
   private async ensureExecutorSession(goalId: string, runId: string): Promise<string> {
     const goal = this.store.getGoal(goalId);
-    const run = this.store.getRun(goalId);
+    const run = this.store.getCurrentRun(goalId);
     if (!goal || !run || run.runId !== runId || !run.workspacePath) throw new Error("executor-run-not-ready");
-    const model = run.model ?? goal.model;
+    const model = run.model;
     if (!model) throw new Error("executor-model-pin-missing");
-    if (run.executorSessionId) {
+    const existingBinding = run.executorSessionId ? this.store.getSessionBinding(run.executorSessionId) : undefined;
+    if (run.executorSessionId && existingBinding?.role === "executor") {
       try {
         const identity = await this.session.get(run.executorSessionId, run.workspacePath);
         const expected: SessionIdentity = {
@@ -680,7 +636,7 @@ export class Orchestrator {
         };
         if (!sameSessionIdentity(identity, expected)) {
           const token = this.store.getOwnedFencingToken(goalId);
-          if (token !== undefined) this.store.blockGoal(goalId, token, "executor-session-mismatch", "executor session identity mismatch", { state: goal.state as GoalState, runId });
+           if (token !== undefined) this.store.blockGoal(goalId, token, "executor-session-mismatch", "executor session identity mismatch", { state: goal.state as WorkflowState, runId });
           throw new Error("executor-session-identity-mismatch");
         }
         return run.executorSessionId;
@@ -692,10 +648,10 @@ export class Orchestrator {
     if (root.parentID) throw new Error("executor-root-session-invalid");
     const children = await this.session.children(goal.rootSessionId, run.workspacePath);
      const expectedMetadata = goatMetadata(run, "executor", goal.projectId, model);
-     const matching = children.filter((child) => child.agent === "goat-executor" && child.parentID === goal.rootSessionId && goatMetadataMatches(child.metadata, expectedMetadata));
+     const matching = children.filter((child) => child.id !== run.executorSessionId && child.agent === "goat-executor" && child.parentID === goal.rootSessionId && goatMetadataMatches(child.metadata, expectedMetadata));
     if (matching.length > 1) {
       const token = this.store.getOwnedFencingToken(goalId);
-      if (token !== undefined) this.store.blockGoal(goalId, token, "multiple-matching-executor-sessions", "multiple-matching-executor-sessions", { state: goal.state as GoalState, runId });
+       if (token !== undefined) this.store.blockGoal(goalId, token, "multiple-matching-executor-sessions", "multiple-matching-executor-sessions", { state: goal.state as WorkflowState, runId });
       throw new Error("multiple-executor-sessions");
     }
     const child = matching[0] ?? await this.session.create({
@@ -707,16 +663,16 @@ export class Orchestrator {
       agent: "goat-executor",
       permission: sessionDenyRules("executor"),
     });
-     const expectedIdentity: SessionIdentity = { id: child.id, title: child.title, projectID: goal.projectId, workspaceID: run.executorWorkspaceId, parentID: goal.rootSessionId, directory: run.workspacePath, agent: "goat-executor", model, metadata: expectedMetadata };
+     const expectedIdentity: SessionIdentity = { id: child.id, title: child.title, projectID: goal.projectId, workspaceID: child.workspaceID, parentID: goal.rootSessionId, directory: run.workspacePath, agent: "goat-executor", model, metadata: expectedMetadata };
      if (!sameSessionIdentity(child, expectedIdentity)) throw new Error("executor-session-identity-mismatch");
     const token = this.store.getOwnedFencingToken(goalId);
     if (token === undefined) throw new Error("stale-lease");
-    const identity = { projectId: goal.projectId, workspaceId: run.executorWorkspaceId };
+    const identity = { projectId: child.projectID, workspaceId: child.workspaceID };
     if (run.executorSessionId && run.executorSessionId !== child.id) {
       const replaced = this.store.replaceExecutorSession(goalId, token, runId, run.executorSessionId, child.id, identity);
       if (!replaced.ok) throw new Error(replaced.error);
     } else {
-      const bound = this.store.bindExecutorSession(goalId, token, runId, child.id, identity, model);
+      const bound = this.store.bindExecutorSession(goalId, token, runId, child.id, identity);
       if (!bound.ok) throw new Error(bound.error);
     }
     return child.id;
@@ -724,12 +680,12 @@ export class Orchestrator {
 
   private async ensureVerifierSession(goalId: string, runId: string, dispatchId: string, attempt: number): Promise<void> {
     const goal = this.store.getGoal(goalId);
-    const run = this.store.getRun(goalId);
+    const run = this.store.getCurrentRun(goalId);
     const dispatch = this.store.getDispatch(dispatchId);
     if (!goal || !run || run.runId !== runId || !run.workspacePath || !dispatch || dispatch.role !== "verifier") throw new Error("verifier-dispatch-not-ready");
-    const model = run.model ?? goal.model;
+    const model = run.model;
     if (!model) throw new Error("verifier-model-pin-missing");
-    const sessionKey = `${run.executorSessionKey}:verifier:${attempt}`;
+    const sessionKey = `${run.runId}:verifier:${attempt}`;
     const title = `Goat Verifier attempt ${attempt}`;
     const children = await this.session.children(goal.rootSessionId, run.workspacePath);
      const expectedMetadata = {
@@ -809,7 +765,7 @@ export class Orchestrator {
     const delivery = this.store.validateDispatchForDelivery(dispatchId, tokenResult.token);
     if (!delivery.ok) return delivery;
     const current = delivery.dispatch;
-    const run = current.runId ? this.store.getRun(current.goalId) : undefined;
+    const run = current.runId ? this.store.getCurrentRun(current.goalId) : undefined;
     const model = current.role === "formulator" ? undefined : run?.model;
     if (current.role !== "formulator" && !model) return { ok: false, error: "dispatch-model-pin-missing" };
     try {
@@ -835,7 +791,7 @@ export class Orchestrator {
           return { ok: false, error: "prompt-rejected" };
         }
         this.store.markDispatchFailed(dispatchId, tokenResult.token, reason);
-         this.store.blockGoal(goalId, tokenResult.token, "executor-prompt-rejected", reason, { state: "ACTIVE", ...(current.runId ? { runId: current.runId } : {}) });
+          this.store.blockGoal(goalId, tokenResult.token, "executor-prompt-rejected", reason, { state: "EXECUTING", ...(current.runId ? { runId: current.runId } : {}) });
         return { ok: false, error: "prompt-rejected" };
       }
       return { ok: false, error: "prompt-delivery-uncertain" };
@@ -877,6 +833,13 @@ export class Orchestrator {
     if (!attempt || !goal || goal.state !== "AWAITING_APPROVAL") return;
     const tokenResult = await this.withToken(goalId);
     if (!tokenResult.ok) return;
+    const pendingDispatch = this.store.listPendingDispatches(goalId).find((dispatch) => dispatch.kind === "approval-reissue" && dispatch.approvalAttemptId === attempt.attemptId);
+    if (pendingDispatch && !attempt.expired) {
+      const reconciliation = await this.reconcileMessage(pendingDispatch);
+      if (reconciliation === "exists") this.store.markDispatchSent(pendingDispatch.dispatchId, tokenResult.token);
+      else if (reconciliation === "missing") await this.deliverDispatch(pendingDispatch.dispatchId);
+      return;
+    }
     let requests;
     try { requests = await this.question.list(goal.projectDirectory); } catch { return; }
     const matches = requests.filter((request) => {
@@ -926,55 +889,33 @@ export class Orchestrator {
       const goal = this.store.getGoal(goalId);
       if (!goal) return;
       try {
-        if (goal.state === "AWAITING_APPROVAL") await this.reconcileApprovalNow(goalId, true);
-        const run = this.store.getRun(goalId);
+        if (goal.state === "AWAITING_APPROVAL") {
+          await this.reconcileApprovalNow(goalId, true);
+          return;
+        }
+        const run = this.store.getCurrentRun(goalId);
         if (!run) return;
-        if (goal.state === "FORMING" && run.status === "CANCELLED") {
-          this.store.releaseLease(goalId, acquired.fencingToken);
-          return;
-        }
-        if (run.status === "PREPARING" && !run.baseline) {
+        if (goal.state === "PREPARING") {
           await this.activateApprovedNow(goalId);
           return;
         }
-        if (goal.state === "BLOCKED" && run.status === "BLOCKED" && run.preparationRetryRequested) {
-          await this.activateApprovedNow(goalId);
-          return;
-        }
-        if (goal.state === "ACTIVE" && run.status === "FINALIZING") {
-          if (!run.workspacePath || !run.baseline) {
-            this.store.blockGoal(goalId, acquired.fencingToken, "recovery-workspace-invalid", "finalization workspace is unavailable", { state: "ACTIVE", runId: run.runId });
-            return;
-          }
-          try {
-            const captured = await this.captureSnapshot(run.workspacePath);
-            if (!captured.ok) throw new Error(captured.error);
-            const executorDiff = await this.captureExecutorDiff(run, captured.snapshot);
-            const comparison = assertExecutorOwnsSnapshot(run.baseline, captured.snapshot, executorDiff);
-            if (!comparison.ok) throw new Error(comparison.detail);
-            const finalized = this.store.proposeCompletion(goalId, acquired.fencingToken, run.runId, captured.snapshot, executorDiff, `recovery-finalization:${run.runId}`);
-            if (!finalized.ok) throw new Error(finalized.error);
-            await this.ensureVerifierSession(goalId, run.runId, finalized.dispatchId, finalized.attempt);
-            await this.deliverDispatch(finalized.dispatchId);
-          } catch (error) {
-            this.store.blockGoal(goalId, acquired.fencingToken, "recovery-workspace-invalid", error instanceof Error ? error.message : "finalization-recovery-failed", { state: "ACTIVE", runId: run.runId });
-          }
-          return;
-        }
-        if (["ACTIVE", "VERIFYING", "PAUSED"].includes(run.status)) {
+        if (goal.state === "EXECUTING") {
+          if (!(await this.validateRecoveredWorkspace(goal, run))) return;
           await this.ensureExecutorSession(goalId, run.runId);
-          const refreshed = this.store.getRun(goalId) ?? run;
-          const valid = await this.validateRecoveredWorkspace(goal, refreshed);
-          if (!valid) return;
-          if (refreshed.status === "VERIFYING" && this.store.getVerificationResults(refreshed.runId).at(-1)?.outcome === "PASS") {
-            const finalCheck = await this.captureSnapshot(refreshed.workspacePath!);
-            if (!finalCheck.ok) {
-              this.store.blockGoal(goalId, acquired.fencingToken, "workspace-changed-during-verification", finalCheck.error, { state: "VERIFYING", runId: refreshed.runId });
-              return;
-            }
-            this.store.completeVerifiedRun(goalId, acquired.fencingToken, refreshed.runId, finalCheck.snapshot);
-            return;
+        } else if (goal.state === "FINALIZING_EXECUTION") {
+          await this.reconcileFinalizingExecution(goalId, run);
+          return;
+        } else if (goal.state === "VERIFYING") {
+          const dispatch = this.store.listPendingDispatches(goalId).find((item) => item.role === "verifier");
+          if (dispatch) {
+            await this.ensureVerifierSession(goalId, run.runId, dispatch.dispatchId, dispatch.verificationAttempt ?? 0);
           }
+        } else if (goal.state === "FINALIZING_VERIFICATION") {
+          await this.reconcileFinalizingVerification(goalId, run);
+          return;
+        } else if (goal.state === "PAUSED" && !run.checkpoint) {
+          await this.reconcilePause(goalId, run);
+          return;
         }
         for (const dispatch of this.store.listPendingDispatches(goalId)) {
           if (dispatch.kind === "approval-reissue") {
@@ -982,9 +923,10 @@ export class Orchestrator {
              if (attempt && attempt.attemptId === dispatch.approvalAttemptId && attempt.status === "PENDING") await this.deliverDispatch(dispatch.dispatchId);
             continue;
           }
-           if (dispatch.role === "executor" && run.status === "PREPARING") continue;
-           if (dispatch.role === "executor" && run.status === "ACTIVE") await this.ensureExecutorSession(goalId, run.runId);
-           if (dispatch.role === "verifier" && run.status === "VERIFYING") await this.ensureVerifierSession(goalId, run.runId, dispatch.dispatchId, dispatch.verificationAttempt ?? 0);
+           if (dispatch.role === "executor" && goal.state !== "EXECUTING") continue;
+           if (dispatch.role === "executor") await this.ensureExecutorSession(goalId, run.runId);
+           if (dispatch.role === "verifier" && goal.state !== "VERIFYING") continue;
+           if (dispatch.role === "verifier") await this.ensureVerifierSession(goalId, run.runId, dispatch.dispatchId, dispatch.verificationAttempt ?? 0);
           const reconciliation = await this.reconcileMessage(dispatch);
           if (reconciliation === "exists") {
             this.store.markDispatchSent(dispatch.dispatchId, acquired.fencingToken);
@@ -1005,34 +947,31 @@ export class Orchestrator {
   private async validateRecoveredWorkspace(goal: GoalView, run: RunView): Promise<boolean> {
     if (!run.workspacePath || !run.baseline) {
       const token = this.store.getOwnedFencingToken(goal.goalId);
-      if (token !== undefined) this.store.blockGoal(goal.goalId, token, "recovery-workspace-invalid", "recovery-workspace-missing", { state: goal.state as GoalState, runId: run.runId });
+       if (token !== undefined) this.store.blockGoal(goal.goalId, token, "recovery-workspace-invalid", "recovery-workspace-missing", { state: goal.state as WorkflowState, runId: run.runId });
       return false;
     }
     try {
-      if (run.workspaceStrategy === "worktree") {
-        const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName && samePath(worktree.path, run.workspacePath!));
-        if (matches.length !== 1) throw new Error("recovery-worktree-missing-or-changed");
-      }
+      const matches = (await this.workspace.listWorktrees(goal.projectDirectory)).filter((worktree) => worktree.name === run.worktreeName && samePath(worktree.path, run.workspacePath!));
+      if (matches.length !== 1) throw new Error("recovery-worktree-missing-or-changed");
       if (!(await this.workspace.probeGit(run.workspacePath)).isGit) throw new Error("recovery-workspace-not-ready");
       const captured = await this.captureSnapshot(run.workspacePath);
       if (!captured.ok) throw new Error(captured.error);
-       if (run.status === "PAUSED" && run.checkpoint) {
+        if (goal.state === "PAUSED" && run.checkpoint) {
          const comparison = assertSnapshotUnchanged(run.checkpoint, captured.snapshot);
          if (!comparison.ok) throw new Error(comparison.detail);
          return true;
        }
-       if (run.status === "VERIFYING" && run.finalSnapshot) {
-         const comparison = assertSnapshotUnchanged(run.finalSnapshot, captured.snapshot);
+        if ((goal.state === "VERIFYING" || goal.state === "FINALIZING_VERIFICATION") && run.verificationSnapshot) {
+          const comparison = assertSnapshotUnchanged(run.verificationSnapshot, captured.snapshot);
          if (!comparison.ok) throw new Error(comparison.detail);
          return true;
        }
-        const executorDiff = await this.captureExecutorDiff(run, captured.snapshot);
-       const comparison = assertExecutorOwnsSnapshot(run.baseline, captured.snapshot, executorDiff);
+        const comparison = assertHeadUnchanged(run.baseline, captured.snapshot);
       if (!comparison.ok) throw new Error(comparison.detail);
       return true;
     } catch (error) {
       const token = this.store.getOwnedFencingToken(goal.goalId);
-      if (token !== undefined) this.store.blockGoal(goal.goalId, token, "recovery-workspace-invalid", error instanceof Error ? error.message : "recovery-workspace-invalid", { state: goal.state as GoalState, runId: run.runId });
+       if (token !== undefined) this.store.blockGoal(goal.goalId, token, "recovery-workspace-invalid", error instanceof Error ? error.message : "recovery-workspace-invalid", { state: goal.state as WorkflowState, runId: run.runId });
       return false;
     }
   }
@@ -1048,9 +987,9 @@ export class Orchestrator {
      if (!binding || binding.role === "revoked") return { ok: false, error: "stale-goat-session" };
     const role = roleForAgent(context.agent);
     if (!role || bindingRole(binding) !== role) return { ok: false, error: "configured-goat-agent-required" };
-    const run = binding.role === "root" ? this.store.getRun(binding.goal.goalId) : binding.run;
+    const run = binding.role === "root" ? this.store.getCurrentRun(binding.goal.goalId) : binding.run;
     if (!run) return { ok: false, error: "run-not-found" };
-    if (binding.role !== "root" && !["ACTIVE", "VERIFYING", "PAUSED"].includes(run.status)) return { ok: false, error: "stale-goat-session" };
+     if (binding.role !== "root" && !["EXECUTING", "VERIFYING"].includes(binding.goal.state)) return { ok: false, error: "stale-goat-session" };
     const expectedDirectory = binding.role === "root" ? binding.goal.projectDirectory : run.workspacePath ?? binding.goal.projectDirectory;
     const expectedWorktree = binding.role === "root" ? binding.goal.worktreeOrigin : run.workspacePath ?? binding.goal.worktreeOrigin;
     const decision = validateGoatToolAccess({
@@ -1062,7 +1001,7 @@ export class Orchestrator {
       workspaceMatches: samePath(context.directory, expectedDirectory) && samePath(context.worktree, expectedWorktree),
     });
        if (!decision.allowed) return { ok: false, error: decision.reason };
-       if (binding.role === "executor" && run && run.status !== "ACTIVE") return { ok: false, error: "stale-goat-session" };
+        if (binding.role === "executor" && binding.goal.state !== "EXECUTING") return { ok: false, error: "stale-goat-session" };
        return { ok: true, goal: binding.goal, run };
   }
 
@@ -1096,19 +1035,59 @@ export class Orchestrator {
     return this.workspace.captureSnapshot(directory);
   }
 
-  private async captureExecutorDiff(run: RunView, current?: WorkspaceSnapshot): Promise<readonly CanonicalDiffEntry[]> {
-    if (!run.executorSessionId || !run.workspacePath) throw new Error("executor-session-missing");
-    const raw = await this.session.diff(run.executorSessionId, run.workspacePath);
-    const canonical = canonicalizeExecutorDiff(raw, this.platform);
-    if (!canonical.ok) throw new Error(`executor-diff-${canonical.code}`);
-    if (!current) {
-      const captured = await this.captureSnapshot(run.workspacePath);
-      if (!captured.ok) throw new Error(captured.error);
-      current = captured.snapshot;
+  private async reconcileFinalizingExecution(goalId: string, run: RunView): Promise<void> {
+    if (!run.workspacePath) return;
+    const token = await this.withToken(goalId);
+    if (!token.ok) return;
+    const status = run.executorSessionId ? await this.session.status(run.executorSessionId, run.workspacePath) : "missing";
+    if (status === "busy" || status === "retry") return;
+    if (status === "unknown") return void this.store.blockGoal(goalId, token.token, "session-error", "session-stop-status-unknown", { state: "FINALIZING_EXECUTION", runId: run.runId });
+    const snapshot = await this.captureSnapshot(run.workspacePath);
+    if (!snapshot.ok) {
+      this.store.blockGoal(goalId, token.token, "workspace-comparison-invalid", snapshot.error, { state: "FINALIZING_EXECUTION", runId: run.runId });
+      return;
     }
-     if (!this.session.history) return canonical.entries;
-     const history = await this.session.history(run.executorSessionId, run.workspacePath);
-     return attributeExecutorUntrackedChanges(canonical.entries, current, history, run.workspacePath, this.platform);
+    const started = this.store.completeExecutorHandoff(goalId, token.token, run.runId, snapshot.snapshot);
+    if (!started.ok) return;
+    await this.ensureVerifierSession(goalId, run.runId, started.dispatchId, started.attempt);
+    await this.deliverDispatch(started.dispatchId);
+  }
+
+  private async reconcileFinalizingVerification(goalId: string, run: RunView): Promise<void> {
+    if (!run.workspacePath) return;
+    const token = await this.withToken(goalId);
+    if (!token.ok) return;
+    const result = this.store.getVerificationResults(run.runId).at(-1);
+    if (!result || result.outcome === "PENDING") return;
+    const status = result.verifierSessionId ? await this.session.status(result.verifierSessionId, run.workspacePath) : "missing";
+    if (status === "busy" || status === "retry") return;
+    if (status === "unknown") return void this.store.blockGoal(goalId, token.token, "session-error", "session-stop-status-unknown", { state: "FINALIZING_VERIFICATION", runId: run.runId });
+    const snapshot = await this.captureSnapshot(run.workspacePath);
+    if (!snapshot.ok) {
+      this.store.blockGoal(goalId, token.token, "workspace-changed-during-verification", snapshot.error, { state: "FINALIZING_VERIFICATION", runId: run.runId });
+      return;
+    }
+    const finished = this.store.completeVerifierHandoff(goalId, token.token, run.runId, snapshot.snapshot);
+    if (finished.ok && finished.outcome === "COMPLETED") {
+      this.notify({ title: "Goat completed", message: "Independent verification passed every MUST criterion.", variant: "success" });
+    } else if (finished.ok && finished.outcome === "BLOCKED") {
+      this.notify({ title: "Goat blocked", message: "Verification requires user action before continuing.", variant: "error" });
+    } else if (finished.ok && finished.outcome === "EXECUTING" && finished.dispatchId) {
+      await this.ensureExecutorSession(goalId, run.runId);
+      await this.deliverDispatch(finished.dispatchId);
+    }
+  }
+
+  private async reconcilePause(goalId: string, run: RunView): Promise<void> {
+    if (!run.workspacePath) return;
+    const token = await this.withToken(goalId);
+    if (!token.ok) return;
+    const status = run.executorSessionId ? await this.session.status(run.executorSessionId, run.workspacePath) : "missing";
+    if (status === "busy" || status === "retry") return;
+    if (status === "unknown") return void this.store.blockGoal(goalId, token.token, "session-error", "pause-session-status-unknown", { state: "PAUSED", runId: run.runId });
+    const captured = await this.captureSnapshot(run.workspacePath);
+    if (!captured.ok) return void this.store.blockGoal(goalId, token.token, "workspace-comparison-invalid", captured.error, { state: "PAUSED", runId: run.runId });
+    this.store.completePause(goalId, token.token, run.runId, captured.snapshot);
   }
 
   private async interruptRunSessions(run: RunView | undefined): Promise<void> {
@@ -1120,7 +1099,7 @@ export class Orchestrator {
 
   private async interruptSession(sessionId: string | null, directory: string | null): Promise<void> {
     if (!sessionId || !directory) return;
-    try { await this.session.interrupt(sessionId, directory); } catch { /* stale associations remain fail-closed */ }
+    try { await this.session.interrupt(sessionId, directory); } catch { /* durable role revocation remains authoritative */ }
   }
 
   private notify(input: { title: string; message: string; variant: "info" | "success" | "warning" | "error" }, directory?: string): void {
@@ -1141,7 +1120,7 @@ function goatMetadata(run: RunView, role: "executor", projectId: string, model: 
       projectId,
       goalId: run.goalId,
       runId: run.runId,
-      sessionKey: run.executorSessionKey,
+      sessionKey: run.runId,
       providerId: model.providerID,
       modelId: model.id,
       variant: model.variant ?? null,
@@ -1177,71 +1156,6 @@ function sameSessionIdentity(identity: SessionIdentity, expected: SessionIdentit
 function sameModelIdentity(left: SessionModel | null, right: SessionModel | null): boolean {
   if (!left || !right) return left === right;
   return left.providerID === right.providerID && left.id === right.id && (left.variant ?? "default") === (right.variant ?? "default");
-}
-
-function attributeExecutorUntrackedChanges(
-  entries: readonly CanonicalDiffEntry[],
-  current: WorkspaceSnapshot,
-  history: readonly unknown[],
-  directory: string,
-  platform: Platform,
-): readonly CanonicalDiffEntry[] {
-  const attributed = new Map(entries.map((entry) => [entry.path, entry]));
-  const currentDiff = new Map(current.diff.map((entry) => [entry.path, entry]));
-  const untracked = new Set([
-    ...current.untracked.map((entry) => entry.path),
-    ...current.status.filter((entry) => entry.status === "added").map((entry) => entry.path),
-  ]);
-  const visit = (node: unknown): void => {
-    if (Array.isArray(node)) { for (const item of node) visit(item); return; }
-    if (!node || typeof node !== "object") return;
-    const value = node as { type?: unknown; tool?: unknown; state?: unknown; input?: unknown; files?: unknown };
-    if (value.type === "patch" && Array.isArray(value.files)) {
-      for (const rawPath of value.files) {
-        if (typeof rawPath !== "string") continue;
-        try {
-          const path = normalizeWorkspacePath(relativeExecutorPath(rawPath, directory), platform);
-          const diff = currentDiff.get(path);
-          if (untracked.has(path) && diff?.status === "added" && !attributed.has(path)) attributed.set(path, diff);
-        } catch { /* invalid or out-of-workspace patch targets remain unattributed */ }
-      }
-    }
-    if (value.type === "tool" && value.tool === "write" && value.state && typeof value.state === "object") {
-      const state = value.state as { status?: unknown; input?: unknown };
-      if ((state.status === undefined || state.status === "completed") && state.input && typeof state.input === "object") {
-        const record = state.input as Record<string, unknown>;
-        if (typeof record.content === "string") {
-          const rawPath = typeof record.filePath === "string" ? record.filePath : typeof record.path === "string" ? record.path : undefined;
-          if (rawPath) {
-            try {
-              const path = normalizeWorkspacePath(relativeExecutorPath(rawPath, directory), platform);
-              const currentHash = current.untracked.find((entry) => entry.path === path)?.contentHash;
-              if (untracked.has(path) && (!attributed.has(path) || addedPatchContentHash(attributed.get(path)?.patch) !== currentHash)) {
-                const lines = record.content.split(/\r?\n/);
-                const contentLines = record.content.endsWith("\n") ? lines.slice(0, -1) : lines;
-                const patchBody = contentLines.map((line) => `+${line}`).join("\n");
-                const patch = `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${contentLines.length} @@\n${patchBody}${record.content.endsWith("\n") ? "\n" : "\n\\ No newline at end of file\n"}`;
-                attributed.set(path, { path, status: "added", additions: contentLines.length, deletions: 0, patch });
-              }
-            } catch { /* invalid or out-of-workspace tool targets remain unattributed */ }
-          }
-        }
-      }
-    }
-    for (const child of Object.values(node)) visit(child);
-  };
-  visit(history);
-  return [...attributed.values()].sort((left, right) => left.path.localeCompare(right.path));
-}
-
-function relativeExecutorPath(value: string, directory: string): string {
-  const normalizedValue = value.replace(/\\/g, "/");
-  const normalizedDirectory = directory.replace(/\\/g, "/").replace(/\/+$/, "");
-  const left = normalizedValue.toLowerCase();
-  const root = normalizedDirectory.toLowerCase();
-  if (left === root) throw new TypeError("executor-file-target-is-directory");
-  if (left.startsWith(`${root}/`)) return normalizedValue.slice(normalizedDirectory.length + 1);
-  return normalizedValue;
 }
 
 function extractAnswers(metadata: unknown): string[][] | undefined {

@@ -1,6 +1,6 @@
 {
   "name": "opencode-goat",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Contract-driven Goal execution and verification for OpenCode",
   "type": "module",
   "license": "MIT",
@@ -25,6 +25,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "LICENSE",
+    "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
     "CHANGELOG.md",

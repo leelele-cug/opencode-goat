@@ -3,7 +3,7 @@ import { executeGoatCommand, parseGoatCommand } from "../src/opencode/commands.j
 import type { Config } from "@opencode-ai/plugin";
 import { assertGoatToolRegistration, registerGoatConfig } from "../src/opencode/config.js";
 import { REGISTERED_GOAT_TOOL_IDS, ROLE_CAPABILITIES } from "../src/core/role-capabilities.js";
-import type { GoalState } from "../src/core/state.js";
+import type { WorkflowState } from "../src/core/state.js";
 import type { BlockerCode } from "../src/core/errors.js";
 import { renderBlocked, renderCompleted, renderConcise, renderDetailed, renderDoctor, renderHelp } from "../src/presentation.js";
 import type { Orchestrator, StatusReadModel } from "../src/runtime/orchestrator.js";
@@ -14,6 +14,7 @@ import { classifyExternalError } from "../src/core/ports.js";
 import { isNonTerminal } from "../src/core/state.js";
 import { redact } from "../src/core/redaction.js";
 import { agentIdForRole } from "../src/core/role-capabilities.js";
+import { readFileSync } from "node:fs";
 
 test("Goat distinguishes concise and detailed status commands", () => {
   expect(parseGoatCommand(" ")).toEqual({ type: "status", detailed: false });
@@ -21,6 +22,16 @@ test("Goat distinguishes concise and detailed status commands", () => {
   expect(parseGoatCommand("doctor")).toEqual({ type: "doctor" });
   expect(parseGoatCommand("revise")).toEqual({ type: "unknown", raw: "revise" });
   expect(parseGoatCommand("revise make it faster")).toEqual({ type: "revise", change: "make it faster" });
+});
+
+test("workflow visuals use a compact mirrored Execute and Verify loop", () => {
+  for (const file of ["assets/readme/workflow.svg", "assets/readme/workflow.zh-CN.svg"]) {
+    const svg = readFileSync(file, "utf8");
+    expect(svg).toContain('height="340" viewBox="0 0 1400 340"');
+    expect(svg).toContain('d="M831 218 C875 188 985 188 1029 218"');
+    expect(svg).toContain('d="M1029 218 C985 248 875 248 831 218"');
+    expect(svg).toContain('x="930" y="275"');
+  }
 });
 
 test("Goat registers fixed agents without any allow or ask permission rules", () => {
@@ -62,49 +73,49 @@ test("role capabilities expose no overrideable permission surface", () => {
 
 const commandOrigin: GoalOrigin = { projectId: "project-1", rootWorkspaceId: null, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project" };
 
-function statusModel(state: GoalState = "ACTIVE", blockerCode: BlockerCode | null = null): StatusReadModel {
+function statusModel(state: WorkflowState = "EXECUTING", blockerCode: BlockerCode | null = null): StatusReadModel {
   return {
     goal: {
       goalId: "goal-1", projectId: "project-1", rootSessionId: "root-1", rootWorkspaceId: null,
       projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", sourceRequest: "ship it", formationRequest: "clarify scope",
-      model: null, state, currentRevision: 1, approvedRevisionHash: "hash", currentRunId: "run-1", blockerCode, blocker: blockerCode ? "Needs attention" : null,
-      stateVersion: 1, createdAt: "now", updatedAt: "now",
+       model: null, state, resumeState: state === "PAUSED" || state === "BLOCKED" ? "EXECUTING" : null, currentRevision: 1, approvedRevisionHash: "hash", currentRunId: "run-1", blockerCode, blocker: blockerCode ? "Needs attention" : null,
+      createdAt: "now", updatedAt: "now",
     },
     revision: {
       goalId: "goal-1", revision: 1, hash: "hash", createdAt: "now",
-      body: { sourceRequest: "ship it", outcome: "it ships", scope: { included: ["feature"], excluded: [] }, constraints: ["safe"], assumptions: [], workspace: "current" },
+      body: { sourceRequest: "ship it", outcome: "it ships", scope: { included: ["feature"], excluded: [] }, constraints: ["safe"], assumptions: [] },
       criteria: [
         { id: "must", priority: "must", description: "feature works", verification: [{ kind: "command", command: "bun test" }] },
         { id: "should", priority: "should", description: "docs exist", verification: [{ kind: "inspection", description: "read docs" }] },
       ],
     },
     run: {
-      runId: "run-1", goalId: "goal-1", approvalAttemptId: "attempt-1", revision: 1, approvedRevisionHash: "hash", workspaceStrategy: "current", worktreeName: null,
-      workspacePath: "/tmp/project", baseline: null, checkpoint: buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], rawDiff: "", platform: "linux" }), finalSnapshot: null, executorDiff: null,
-      executorSessionId: null, executorSessionKey: "session-key", executorProjectId: null, executorWorkspaceId: null, model: null, status: "ACTIVE", verificationAttempts: 3, verificationBatch: 2,
-      preparationRetryRequested: false, rowVersion: 1,
+      runId: "run-1", goalId: "goal-1", approvalAttemptId: "attempt-1", revision: 1, approvedRevisionHash: "hash", worktreeName: "goat-run-1",
+       workspacePath: "/tmp/project", baseline: null, checkpoint: buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], platform: "linux" }), verificationSnapshot: null, finalizationOperationKey: null,
+       executorSessionId: null, executorProjectId: null, executorWorkspaceId: null, model: null, verificationAttempts: 3, verificationBatch: 2,
+      correctionsInBatch: 1, endedAt: null, endReason: null,
     },
     evidence: [{ evidenceId: "evidence-1", goalId: "goal-1", runId: "run-1", revision: 1, criterionId: "must", source: "test", method: "command", expectedResult: "pass", actualReference: "output", producer: "verifier", recordedAt: "now" }],
-    results: [{ attempt: 1, verifierSessionId: null, verifierSessionKey: null, outcome: "PASS", findings: [{ criterionId: "must", result: "pass", evidenceIds: ["evidence-1"], note: "verified" }], createdAt: "now", finalizedAt: "now" }],
-    audit: [{ kind: "activated", actor: "root", previousState: "AWAITING_APPROVAL", nextState: "ACTIVE", goalSequence: 1, sourceEventId: null, createdAt: "now" }],
+     results: [{ attempt: 1, verifierSessionId: null, verifierSessionKey: null, outcome: "PASS", findings: [{ criterionId: "must", result: "pass", evidenceIds: ["evidence-1"], note: "verified" }], createdAt: "now", reportedAt: "now" }],
+     audit: [{ kind: "activated", actor: "root", previousState: "AWAITING_APPROVAL", nextState: "EXECUTING", goalSequence: 1, sourceEventId: null, createdAt: "now" }],
     attempt: null,
   };
 }
 
 test("presentation renders every public status view", () => {
   const model = statusModel();
-  for (const state of ["FORMING", "AWAITING_APPROVAL", "ACTIVE", "VERIFYING", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"] satisfies GoalState[]) {
-    expect(renderConcise(statusModel(state))).toContain(`Goat: ${state.charAt(0) + state.slice(1).toLowerCase()}`);
+   for (const state of ["PLANNING", "AWAITING_APPROVAL", "EXECUTING", "FINALIZING_EXECUTION", "VERIFYING", "FINALIZING_VERIFICATION", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"] satisfies WorkflowState[]) {
+     expect(renderConcise(statusModel(state))).toContain("Goat:");
   }
   expect(renderConcise(model)).toContain("Formation request: clarify scope");
   expect(renderDetailed(model)).toContain("Attempt 1: PASS");
-  expect(renderDetailed({ ...model, revision: undefined })).toContain("Goat: Active");
+   expect(renderDetailed({ ...model, revision: undefined })).toContain("Goat: Execute");
   expect(renderBlocked(statusModel("BLOCKED", "approval-not-approved"))).toContain("Run /goat resume to ask for approval again");
   expect(renderBlocked(statusModel("BLOCKED", "workspace-preparation-failed"))).toContain("Resolve the blocker");
   expect(renderCompleted(statusModel("COMPLETED"))).toContain("verified");
   expect(renderHelp()).toContain("/goat revise <change>");
-  expect(renderDoctor({ schemaVersion: 8, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: true, isClean: true }, binding: null })).toContain("ready and clean");
-  expect(renderDoctor({ schemaVersion: 8, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: false, isClean: false }, binding: {} })).toContain("not a Git workspace");
+  expect(renderDoctor({ schemaVersion: 9, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: true, isClean: true }, binding: null })).toContain("ready and clean");
+  expect(renderDoctor({ schemaVersion: 9, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: false, isClean: false }, binding: {} })).toContain("not a Git workspace");
 });
 
 test("executeGoatCommand covers status, intent, and control outcomes", async () => {
@@ -113,7 +124,7 @@ test("executeGoatCommand covers status, intent, and control outcomes", async () 
   let resume: { ok: true; delivery?: "sent" | "failed" | "uncertain" } | { ok: false; error: string } = { ok: true, delivery: "sent" };
   let operation: { ok: true } | { ok: false; error: string } = { ok: true };
   const orchestrator = {
-    getDoctorStatus: async () => ({ schemaVersion: 8, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: true, isClean: true }, binding }),
+    getDoctorStatus: async () => ({ schemaVersion: 9, projectDirectory: "/tmp/project", worktreeOrigin: "/tmp/project", git: { isGit: true, isClean: true }, binding }),
     getStatusReadModel: () => model,
     getBindingForSession: () => binding,
     createGoal: async () => ({ ok: true as const, goalId: "goal-1" }),
@@ -126,8 +137,8 @@ test("executeGoatCommand covers status, intent, and control outcomes", async () 
   expect(await executeGoatCommand(orchestrator, "root-1", "help", commandOrigin)).toContain("Usage:");
   expect(await executeGoatCommand(orchestrator, "root-1", "doctor", commandOrigin)).toContain("Goat doctor");
   expect(await executeGoatCommand(orchestrator, "root-1", "status", commandOrigin)).toBe("[Goat] No Goal for this Session.");
-  model = statusModel("ACTIVE");
-  expect(await executeGoatCommand(orchestrator, "root-1", "", commandOrigin)).toContain("Goat: Active");
+   model = statusModel("EXECUTING");
+   expect(await executeGoatCommand(orchestrator, "root-1", "", commandOrigin)).toContain("Goat: Execute");
   model = statusModel("BLOCKED", "approval-not-approved");
   expect(await executeGoatCommand(orchestrator, "root-1", "status", commandOrigin)).toContain("What failed:");
   model = statusModel("COMPLETED");
@@ -164,7 +175,7 @@ test("small core helpers cover external response shapes and bounded diagnostics"
   expect(classifyExternalError({ data: { statusCode: 422 } })).toBe("rejected");
   expect(classifyExternalError({ data: { statusCode: 500 } })).toBe("unknown");
   expect(classifyExternalError(null)).toBe("unknown");
-  expect(isNonTerminal("ACTIVE")).toBe(true);
+   expect(isNonTerminal("EXECUTING")).toBe(true);
   expect(isNonTerminal("COMPLETED")).toBe(false);
   expect(agentIdForRole("formulator")).toBe("goat-formulator");
   expect(redact({ values: ["safe", "token=secret"], long: "x".repeat(5_000) })).toMatchObject({ values: ["safe", "[REDACTED]"] });

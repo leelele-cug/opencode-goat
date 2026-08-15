@@ -4,27 +4,24 @@ English | [简体中文](README.zh-CN.md)
 
 ![GOAT: Better Goal for OpenCode](assets/readme/hero.svg)
 
-Goat adds a Contract-driven, independently verified Goal workflow to OpenCode.
+Goat adds an explicit, independently checked Goal workflow to OpenCode.
 
-This release is an alpha preview. Use it with disposable branches or
-worktrees until your team has completed its own recovery and permission review.
+This release is an alpha preview. Use it first with a trusted repository and a
+disposable Goal while you review the resulting changes and your OpenCode
+permissions.
 
 Source and issue tracker: <https://github.com/leelele-cug/opencode-goat>
 
-Goat turns a `/goat <intent>` command into a durable, approved Goal Contract,
-executes it in an approved workspace through a dedicated Executor Session, and
-independently verifies every MUST criterion with a dedicated read-only Verifier
-Session.
-
-The workflow is deliberately explicit: a Goal becomes an exact Contract,
-waits for native approval, runs in the selected workspace, and is checked by an
-independent Verifier before completion.
+The workflow turns `/goat <intent>` into a clear plan, waits for your approval,
+works in an isolated native Git worktree, and independently checks the result
+before marking the Goal done.
 
 ## Requirements
 
 - OpenCode `>=1.18.15`
-- Bun `1.3.14` (OpenCode supplies the runtime; this version is required for local development and smoke tests)
-- Git `2.40+` and a Git worktree for every Goal
+- Git `2.40+`
+- A clean source Git repository before each Goal: no staged, unstaged, or untracked changes
+- A separate native Git worktree for each Goal; do not use the source directory as the execution workspace
 
 ## Install
 
@@ -36,81 +33,57 @@ Add `opencode-goat` to your OpenCode plugin configuration:
 }
 ```
 
-The plugin is zero-configuration. `OPENCODE_GOAT_HOME` may override the data
-directory (defaults to the platform data location plus `opencode-goat`).
+The plugin needs no additional configuration. `OPENCODE_GOAT_HOME` may override
+the local data directory; by default Goat uses the platform data location plus
+`opencode-goat`.
 
-The package is published under the `alpha` dist-tag. Pin the exact version in
-production experiments after reviewing the changelog.
+The package is published under the `alpha` dist-tag. Review the changelog and
+pin an exact release when you need a reproducible preview setup.
 
 ## Commands
 
 ```text
-/goat <intent>        create a Goal and start read-only formulation
-/goat                 concise one-screen status
-/goat status          detailed Contract, criteria, evidence, and history
-/goat pause           pause execution with a verified workspace checkpoint
-/goat resume          resume, retry preparation, or reissue a rejected approval
-/goat revise <change> close the current Run and return to formulation
-/goat cancel          cancel and preserve all workspace changes
-/goat doctor          inspect Goat schema, project, bindings, and workspace
-/goat help            short usage
+/goat <intent>        start a Goal from a desired outcome
+/goat                 show a concise status
+/goat status          show the plan, checks, results, and history
+/goat pause           pause and keep the worktree changes
+/goat resume          continue after a pause or blocked check
+/goat revise <change> return to planning with a requested change
+/goat cancel          cancel and keep all worktree changes
+/goat doctor          inspect the current project and worktree
+/goat help            show short usage help
 ```
+
+## Workflow
 
 ![Goat Goal workflow](assets/readme/workflow.svg)
 
-## Roles
+1. **Goal**: Describe the outcome you want with `/goat <intent>`.
+2. **Plan**: Goat turns the request into a concrete scope, constraints, and checks.
+3. **Approve**: Review and approve the plan before any worktree changes begin.
+4. **Execute**: After approval, Goat creates an isolated native Git worktree and makes changes only there.
+5. **Verify**: A separate Verifier checks the approved criteria and evidence in the same worktree; failed checks return findings for correction.
+6. **Done**: The Goal is complete only after verification passes.
 
-Goat registers three fixed agents. Their capabilities are defined once in
-`src/core/role-capabilities.ts` and cannot be overridden by user agent config.
+A failed initial verification can trigger at most ten automatic corrections per
+batch; the initial verification is not a correction. When that limit is
+reached, use `/goat resume` to continue with another batch. No worktree changes
+are discarded by the correction loop.
 
-| Agent | Mode | Capabilities |
-| --- | --- | --- |
-| `goat-formulator` | primary, root Session | read/search/webfetch/websearch, native Question, `goat_state`, `goat_contract_propose` |
-| `goat-executor` | primary, child Session per Run | read/search/webfetch/websearch, edit/write/apply_patch/bash in the approved workspace, `goat_state`, `goat_evidence_record`, `goat_completion_propose`, `goat_block` |
-| `goat-verifier` | subagent, child Session per attempt | read/search/webfetch/websearch, approved verification commands, `goat_state`, `goat_verifier_report` |
+## Safety
 
-Goat never generates `allow` or `ask` permission rules. OpenCode's native
-permission system remains the final policy layer: user global `deny` stays
-`deny`, user `ask` stays `ask`, and user `allow` cannot open tools outside the
-fixed role matrix.
+- Goat is workflow control, not an OS sandbox. OpenCode's native permissions are the final authority.
+- Keep OpenCode permissions for external directories and other side-effecting tools at `ask` or `deny` unless you have reviewed the risk.
+- Protect the local Goat data directory. It contains Goal requests, plans, check results, history, and workspace references; do not share it between unrelated users or projects.
+- Review changes in the worktree yourself before committing, merging, or pushing.
+- Goat keeps the native worktree after completion, cancellation, or revision. It never commits, merges, pushes, or removes it automatically.
 
-Goat is not an OS sandbox. Executor bash remains subject to OpenCode's native
-permission system and may have side effects beyond Git's visible diff. Keep
-OpenCode permissions for external directories and other side-effecting tools
-at `ask` or `deny`.
+See [SECURITY.md](SECURITY.md) for the user security guide.
 
-## Safety properties
+## Contributing
 
-- No target-project write before an exact Contract revision is approved.
-- Every new Run activates only from a clean, preflight-checked workspace.
-- Executor and Verifier child Sessions are identity-bound (project, workspace,
-  parent, directory, agent, model, metadata) and stale Sessions are rejected.
-- Completion requires the final workspace state to be fully explained by the
-  dedicated Executor Session diff; unexplained changes block the Goal.
-- All durable state lives in a single SQLite database (Schema v8, no
-  migrations). Version mismatches fail startup without modification.
-- The database contains source requests, Contracts, evidence references, audit
-  data, and workspace patches. Protect `OPENCODE_GOAT_HOME` and back it up as
-  appropriate; incompatible databases must be moved aside manually.
-- A rejected or closed approval Question blocks the Goal with an actionable
-  message; `/goat resume` creates a new approval generation on the same
-  Contract revision.
-- Verification runs in batches of at most ten rounds. Every non-passing round
-  continues automatically; after round ten, `/goat resume` starts another
-  batch.
-- Goat preserves native worktrees after completion, cancellation, and revision.
-  It never commits, merges, pushes, or removes a user's worktree automatically.
-
-## Development
-
-```text
-bun run check        typecheck + tests
-bun run coverage:check coverage-gated tests
-bun run build        clean build to dist/
-bun test             unit/integration tests
-bun run pack:smoke   real tarball install and export verification
-bun run smoke:opencode   authenticated live smoke (defaults to opencode/deepseek-v4-flash-free; override with OPENCODE_SMOKE_MODEL)
-```
+Development and release commands, maintainer guidance, and internal terminology
+are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

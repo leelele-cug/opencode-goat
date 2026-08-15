@@ -73,6 +73,16 @@ jobs:
             printf '::error title=npm publish::%s\n' "$diagnostic"
             exit "$status"
           fi
+      - name: Verify published package
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./package.json').version")
+          for attempt in 1 2 3 4 5; do
+            if npm view "opencode-goat@$version" version dist-tags --json; then exit 0; fi
+            sleep 10
+          done
+          echo "published package was not visible on npm after retries" >&2
+          exit 1
       - name: Create GitHub release
         if: github.event_name == 'push'
         env:

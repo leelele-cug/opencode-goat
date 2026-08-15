@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_VERIFICATION_ATTEMPTS } from "./core/state.js";
+import { DEFAULT_MAX_VERIFICATION_ATTEMPTS, displayStage, ownerForState } from "./core/state.js";
 import type { StatusReadModel } from "./runtime/orchestrator.js";
 
 export function renderConcise(model: StatusReadModel): string {
@@ -8,9 +8,9 @@ export function renderConcise(model: StatusReadModel): string {
   const must = revision?.criteria.filter((criterion) => criterion.priority === "must") ?? [];
   const covered = new Set(model.evidence.map((item) => item.criterionId));
   return [
-    `Goat: ${titleCase(goal.state)}`,
+     `Goat: ${displayStage(goal.state)} (${titleCase(goal.state)})`,
     `Outcome: ${revision?.body.outcome ?? goal.sourceRequest}`,
-    `Workspace: ${run?.workspacePath ?? revision?.body.workspace ?? "not selected"}`,
+    `Workspace: ${run?.workspacePath ?? "not activated"}`,
     `Evidence: ${must.filter((criterion) => covered.has(criterion.id)).length}/${must.length} MUST criteria covered`,
     `Waiting: ${waitingReason(goal)}`,
     ...(goal.formationRequest ? [`Formation request: ${goal.formationRequest}`] : []),
@@ -20,6 +20,7 @@ export function renderConcise(model: StatusReadModel): string {
 
 export function renderDetailed(model: StatusReadModel): string {
   const concise = renderConcise(model);
+  const goal = model.goal;
   const revision = model.revision;
   if (!revision) return concise;
   const run = model.run;
@@ -31,7 +32,7 @@ export function renderDetailed(model: StatusReadModel): string {
     `Included: ${revision.body.scope.included.join("; ")}`,
     `Excluded: ${revision.body.scope.excluded.length ? revision.body.scope.excluded.join("; ") : "None"}`,
     `Constraints: ${revision.body.constraints.length ? revision.body.constraints.join("; ") : "None"}`,
-    `Workspace: ${revision.body.workspace}`,
+    "Execution: a new isolated Git worktree",
     "",
     "Criteria and evidence:",
     ...revision.criteria.map((criterion) => {
@@ -40,7 +41,8 @@ export function renderDetailed(model: StatusReadModel): string {
     }),
     "",
     `Verification: batch ${run?.verificationBatch ?? 1}, round ${run?.verificationAttempts ? ((run.verificationAttempts - 1) % DEFAULT_MAX_VERIFICATION_ATTEMPTS) + 1 : 0}/${DEFAULT_MAX_VERIFICATION_ATTEMPTS}, total ${run?.verificationAttempts ?? 0}`,
-    `Run status: ${run?.status ?? "not active"}`,
+     `Stage owner: ${ownerForState(goal.state)}`,
+     `Run: ${run ? `batch ${run.verificationBatch}, ${run.correctionsInBatch}/${DEFAULT_MAX_VERIFICATION_ATTEMPTS} corrections` : "not active"}`,
     ...model.results.map((result) => `- Attempt ${result.attempt}: ${result.outcome}`),
     "",
     "Recent activity:",
@@ -100,6 +102,9 @@ export function renderDoctor(status: { readonly schemaVersion: number; readonly 
 
 function waitingReason(goal: { state: string; blocker: string | null }): string {
   if (goal.state === "AWAITING_APPROVAL") return "Contract approval";
+  if (goal.state === "PREPARING") return "isolated worktree preparation";
+  if (goal.state === "FINALIZING_EXECUTION") return "Executor is stopping before verification";
+  if (goal.state === "FINALIZING_VERIFICATION") return "Verifier is stopping before the final decision";
   if (goal.state === "BLOCKED") return goal.blocker ?? "user action";
   if (goal.state === "PAUSED") return "user resume";
   if (goal.state === "VERIFYING") return "independent Verifier";
@@ -108,10 +113,13 @@ function waitingReason(goal: { state: string; blocker: string | null }): string 
 
 function titleCase(value: string): string { return value.charAt(0) + value.slice(1).toLowerCase(); }
 function nextAction(state: string): string {
-  return state === "FORMING" ? "Formulator is discovering"
-    : state === "AWAITING_APPROVAL" ? "Approve, revise, or cancel the Contract"
-       : state === "ACTIVE" ? "Executor is working"
-        : state === "VERIFYING" ? "Independent verification is running"
+  return state === "PLANNING" ? "Formulator is discovering"
+     : state === "AWAITING_APPROVAL" ? "Approve, revise, or cancel the Contract"
+       : state === "PREPARING" ? "Preparing the isolated worktree"
+         : state === "EXECUTING" ? "Executor is working"
+          : state === "FINALIZING_EXECUTION" ? "Stopping Executor and freezing the verification state"
+            : state === "VERIFYING" ? "Independent verification is running"
+              : state === "FINALIZING_VERIFICATION" ? "Stopping Verifier and checking the final state"
           : state === "PAUSED" ? "Resume when ready"
             : state === "BLOCKED" ? "Resolve the blocker and resume"
               : state === "COMPLETED" ? "Completed"

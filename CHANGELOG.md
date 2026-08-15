@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0-alpha.4 - 2026-08-15
+
+- Clarified the supported setup: a clean source Git repository and an independent native Git worktree for every Goal.
+- Made the user workflow explicit: Goal -> Plan -> Approve -> Execute -> Verify -> Done.
+- Limited remediation to ten rounds per batch; the initial verification is not
+  a correction, and `/goat resume` starts another batch when needed.
+- Made `goals.state` the sole lifecycle authority with
+  `PLANNING/AWAITING_APPROVAL/PREPARING/EXECUTING/FINALIZING_EXECUTION/VERIFYING/FINALIZING_VERIFICATION/PAUSED/BLOCKED/COMPLETED/CANCELLED`;
+  there is no `runs.state`.
+- Restricted role authority to `EXECUTING` and `VERIFYING`, and made
+  completion/report handoffs run from Session idle events after their tools
+  return without waiting or interrupting.
+- Made pause revoke role authority before checkpointing and made resume route
+  from the persisted `resume_state`.
+- Schema v9 now stores pause/resume context, verification snapshots, finalization
+  operation keys, and terminal run reasons. Existing Goat databases must be
+  moved aside and recreated; no migration is provided for this alpha.
+- Preserved worktrees for user review and removed automatic commit, merge, push, and worktree removal behavior from the user workflow.
+- Clarified that OpenCode permissions remain the final authority and that Goat is not an OS sandbox.
+- Added user guidance for protecting Goat's local data directory.
+- Documented private vulnerability reporting and mandatory release gates.
+
 ## 0.1.0-alpha.3 - 2026-08-14
 
 - Refined the public README, workflow visuals, and social preview around the
@@ -10,7 +32,7 @@
 
 ## 0.1.0-alpha.2 - 2026-08-09
 
-- Schema v8 and ten-round verification batches.
+- Improved Goal persistence and ten-round verification batches.
 - OpenCode CLI compatibility starts at `>=1.18.15`; plugin and SDK build pins remain `1.18.15`.
 - Authenticated smoke defaults to `opencode/deepseek-v4-flash-free` without changing user Goal models.
 - Root and native-worktree plugin instances now share one project-scoped lease owner.
@@ -31,4 +53,3 @@
 - Durable Goal Contracts, approval generations, Executor Sessions, Verifier
   Sessions, workspace attribution, leases, recovery, and SQLite persistence.
 - OpenCode `1.18.11` and Bun `1.3.14` were pinned for the alpha.1 release.
-- Database Schema v6 is incompatible with earlier Goat schemas.

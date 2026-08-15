@@ -26,11 +26,10 @@ function createRuntime() {
     get: async (id, directory) => identity({ id, directory, parentID: id === "root-session" ? null : "root-session" }),
     create: async (input) => identity({ id: "child", parentID: input.parentID ?? null, directory: input.directory, agent: input.agent ?? null, model: input.model ?? null, metadata: input.metadata ?? null, title: input.title ?? null }),
     children: async () => [],
-    promptAsync: async () => undefined,
-    diff: async () => [],
-    message: async () => undefined,
-    interrupt: async () => undefined,
-    status: async () => "idle",
+     promptAsync: async () => undefined,
+     message: async () => undefined,
+     status: async () => "idle",
+     interrupt: async () => undefined,
   };
   const workspace: WorkspacePort = {
     probeGit: async () => ({ isGit: true, isClean: true }),
@@ -48,7 +47,7 @@ function createRuntime() {
 }
 
 function buildSnapshotStub() {
-  return buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], rawDiff: "", platform });
+  return buildSnapshot({ head: "a".repeat(40), status: [], diff: [], untracked: [], platform });
 }
 
 test("config registers Goat agents once and the /goat command", async () => {
@@ -84,7 +83,7 @@ test("the before-hook binds the exact approval Question and denies mismatches", 
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
       { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
-      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
+      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks",
     );
     const live = runtime.store.getLiveApproval(goalId)!;
@@ -104,13 +103,13 @@ test("the after-hook resolves approval and activates the Goal", async () => {
     const goalId = created.goalId;
     await runtime.orchestrator.proposeContract(
       { toolId: "goat_contract_propose", sessionID: "root-session", messageID: "m1", agent: "goat-formulator", directory: projectDirectory, worktree: projectDirectory },
-      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], workspace: "current", criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection", description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, workspaceAvailable: true, infeasibleCriterionIds: [] },
+      { outcome: "works", included: ["x"], excluded: [], constraints: [], assumptions: [], criteria: [{ id: "c", priority: "must", description: "works", verification: [{ kind: "inspection" as const, description: "inspect" }] }], outcomeObservable: true, constraintsReviewed: true, assumptionsReviewed: true, outcomeChangingQuestionsResolved: true, infeasibleCriterionIds: [] },
       "proposal-op-hooks-2",
     );
     const live = runtime.store.getLiveApproval(goalId)!;
     await runtime.hooks["tool.execute.before"]?.({ tool: "question", sessionID: "root-session", callID: "call-1" }, { args: JSON.parse(live.nativeQuestionJson).value } as never);
     await runtime.hooks["tool.execute.after"]?.({ tool: "question", sessionID: "root-session", callID: "call-1", args: undefined }, { output: "", metadata: { answers: [["Approve and start"]] } } as never);
-    expect(runtime.store.getGoal(goalId)?.state).toBe("ACTIVE");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("EXECUTING");
   } finally { runtime.db.close(); }
 });
 
@@ -147,7 +146,7 @@ test("event routing forwards prompted and rejected events to the Orchestrator", 
     const goalId = created.goalId;
     await runtime.hooks.event?.({ event: { type: "session.next.prompted", properties: { sessionID: "x", messageID: "y" } } as never });
     await runtime.hooks.event?.({ event: { type: "worktree.failed", properties: { message: "boom" } } as never });
-    expect(runtime.store.getGoal(goalId)?.state).toBe("FORMING");
+     expect(runtime.store.getGoal(goalId)?.state).toBe("PLANNING");
     await runtime.hooks.event?.({ event: { type: "server.connected", properties: {} } as never });
   } finally { runtime.db.close(); }
 });

@@ -1,7 +1,6 @@
-import { z } from "zod";
 import { posix, win32 } from "node:path";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { z } from "zod";
 import { canonicalHash } from "./canonical.js";
 
 export const WORKSPACE_SNAPSHOT_SCHEMA_VERSION = 1 as const;
@@ -55,7 +54,7 @@ export function normalizeWorkspacePath(path: string, platform: WorkspacePlatform
   return platform === "win32" ? cleaned.toLowerCase() : cleaned;
 }
 
-export function sortByCanonicalPath(left: string, right: string): number {
+function sortByCanonicalPath(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
@@ -111,15 +110,21 @@ export function buildSnapshot(input: {
   status: readonly CanonicalStatusEntry[];
   diff: readonly CanonicalDiffEntry[];
   untracked: readonly UntrackedEntry[];
-  /** Retained only at the adapter boundary; raw text is not persisted. */
-  rawDiff?: string;
   platform: WorkspacePlatform;
 }): WorkspaceSnapshot {
-  const status = input.status.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) }));
-  const diff = input.diff.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) }));
-  const untracked = input.untracked.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) }));
+  const status = input.status.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) })).sort((a, b) => sortByCanonicalPath(a.path, b.path));
+  const diff = input.diff.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) })).sort((a, b) => sortByCanonicalPath(a.path, b.path));
+  const untracked = input.untracked.map((entry) => ({ ...entry, path: normalizeWorkspacePath(entry.path, input.platform) })).sort((a, b) => sortByCanonicalPath(a.path, b.path));
   const snapshot = { schemaVersion: WORKSPACE_SNAPSHOT_SCHEMA_VERSION, head: input.head, status, diff, untracked };
   return WorkspaceSnapshotSchema.parse({ ...snapshot, digest: canonicalHash(snapshot) });
+}
+
+export function parseWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
+  const parsed = WorkspaceSnapshotSchema.parse(value);
+  const { digest, ...content } = parsed;
+  const expected = canonicalHash(content);
+  if (digest !== expected) throw new TypeError("workspace snapshot digest mismatch");
+  return parsed;
 }
 
 export function isWorkspaceClean(snapshot: WorkspaceSnapshot): boolean {
@@ -130,37 +135,32 @@ export function hasSameSnapshotDigest(left: WorkspaceSnapshot, right: WorkspaceS
   return left.head === right.head && left.digest === right.digest;
 }
 
-function indexDiffEntries(entries: readonly CanonicalDiffEntry[]): Map<string, CanonicalDiffEntry> {
-  const result = new Map<string, CanonicalDiffEntry>();
-  for (const entry of entries) {
-    if (result.has(entry.path)) throw new TypeError(`duplicate diff path ${entry.path}`);
-    result.set(entry.path, entry);
-  }
-  return result;
-}
-
-function sameDiffEntry(left: CanonicalDiffEntry, right: CanonicalDiffEntry): boolean {
-  if (left.path !== right.path || left.status !== right.status || left.additions !== right.additions || left.deletions !== right.deletions) return false;
-  if (left.status === "added") return true;
-  return comparablePatch(left.patch) === comparablePatch(right.patch);
-}
-
-function comparablePatch(patch: string): string {
-  return patch.replace(/\r\n/g, "\n").split("\n").filter((line) => !line.startsWith("diff --git ") && !line.startsWith("index ") && !line.startsWith("new file mode ") && !line.startsWith("deleted file mode ") && !line.startsWith("old mode ") && !line.startsWith("new mode ") && !line.startsWith("similarity index ") && !line.startsWith("rename from ") && !line.startsWith("rename to ") && !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("@@ ")).join("\n").replace(/\n+$/, "");
-}
-
-export function canonicalizeExecutorDiff(value: unknown, platform: WorkspacePlatform): { ok: true; entries: readonly CanonicalDiffEntry[] } | { ok: false; code: "invalid-diff-shape" | "patch-missing" | "patch-too-large" } {
-  return canonicalizeDiff(value, platform, true);
-}
-
 export type WorkspaceComparison =
   | { readonly ok: true }
-  | { readonly ok: false; readonly code: "head-changed" | "unattributed-change" | "attribution-incomplete"; readonly detail: string };
+  | { readonly ok: false; readonly code: "head-changed" | "workspace-changed"; readonly detail: string };
+
+export function assertSnapshotUnchanged(expected: WorkspaceSnapshot, observed: WorkspaceSnapshot): WorkspaceComparison {
+  if (expected.head !== observed.head) return { ok: false, code: "head-changed", detail: `HEAD moved from ${expected.head.slice(0, 12)} to ${observed.head.slice(0, 12)}.` };
+  if (expected.digest !== observed.digest) return { ok: false, code: "workspace-changed", detail: "Git-visible worktree state changed while it was paused or being verified." };
+  return { ok: true };
+}
+
+export function assertHeadUnchanged(expected: WorkspaceSnapshot, observed: WorkspaceSnapshot): WorkspaceComparison {
+  return expected.head === observed.head ? { ok: true } : { ok: false, code: "head-changed", detail: `HEAD moved from ${expected.head.slice(0, 12)} to ${observed.head.slice(0, 12)}.` };
+}
 
 export function validateWorkspaceToolArguments(toolId: string, args: unknown, directory: string, platform: WorkspacePlatform): { ok: true } | { ok: false; error: string } {
-  // Bash remains governed by OpenCode's native permission resolver. Goat can
-  // constrain file-oriented tools, but cannot infer every command side effect.
-  if (toolId === "bash") return { ok: true };
+  if (toolId === "bash") {
+    if (!args || typeof args !== "object") return { ok: false, error: "workspace-command-missing" };
+    const record = args as Record<string, unknown>;
+    const command = typeof record.command === "string" ? record.command : typeof record.cmd === "string" ? record.cmd : undefined;
+    if (!command?.trim()) return { ok: false, error: "workspace-command-missing" };
+    const workdir = typeof record.workdir === "string" ? record.workdir : typeof record.cwd === "string" ? record.cwd : undefined;
+    if (workdir && !isWorkspaceTarget(workdir, directory, platform)) return { ok: false, error: "workspace-target-outside-approved-directory" };
+    if (/(?:^|[;&|]\s*|\b(?:sudo|env)\s+)git\s+(?:commit|checkout|switch|reset|merge|rebase|push|pull|cherry-pick|revert|clean|worktree)(?:\s|$)/i.test(command)) return { ok: false, error: "git-lifecycle-command-forbidden" };
+    if (/(?:^|[;&|]\s*)(?:cd|pushd|popd)\b/i.test(command) || /(?:^|[\\/])\.git(?:[\\/]|$)/i.test(command)) return { ok: false, error: "workspace-shell-boundary-forbidden" };
+    return { ok: true };
+  }
   if (toolId === "write" || toolId === "edit") {
     if (!args || typeof args !== "object") return { ok: false, error: "workspace-target-missing" };
     const record = args as Record<string, unknown>;
@@ -172,10 +172,10 @@ export function validateWorkspaceToolArguments(toolId: string, args: unknown, di
     const record = args as Record<string, unknown>;
     const patch = typeof record.patch === "string" ? record.patch : typeof record.patchText === "string" ? record.patchText : undefined;
     if (!patch) return { ok: false, error: "workspace-patch-missing" };
-     const paths = [
-       ...[...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1]?.trim()),
-       ...[...patch.matchAll(/^\*\*\* Move to: (.+)$/gm)].map((match) => match[1]?.trim()),
-     ].filter((value): value is string => !!value);
+    const paths = [
+      ...[...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1]?.trim()),
+      ...[...patch.matchAll(/^\*\*\* Move to: (.+)$/gm)].map((match) => match[1]?.trim()),
+    ].filter((value): value is string => !!value);
     if (paths.length === 0 || paths.some((value) => !isWorkspaceTarget(value, directory, platform))) return { ok: false, error: "workspace-target-outside-approved-directory" };
   }
   return { ok: true };
@@ -221,84 +221,4 @@ function hasSymlinkComponent(root: string, existing: string, path: typeof posix 
     if (next === current) return false;
     current = next;
   }
-}
-
-export function assertSnapshotUnchanged(expected: WorkspaceSnapshot, observed: WorkspaceSnapshot): WorkspaceComparison {
-  if (!hasSameSnapshotDigest(expected, observed)) return { ok: false, code: "unattributed-change", detail: "Workspace changed while the Run was paused or being verified." };
-  return { ok: true };
-}
-
-export function assertExecutorOwnsSnapshot(baseline: WorkspaceSnapshot, current: WorkspaceSnapshot, executorDiff: readonly CanonicalDiffEntry[]): WorkspaceComparison {
-  if (baseline.head !== current.head) return { ok: false, code: "head-changed", detail: `HEAD moved from ${baseline.head.slice(0, 12)} to ${current.head.slice(0, 12)}.` };
-  let executor: Map<string, CanonicalDiffEntry>;
-  let baselineDiff: Map<string, CanonicalDiffEntry>;
-  let currentDiff: Map<string, CanonicalDiffEntry>;
-  let baselineStatus: Map<string, CanonicalStatusEntry>;
-  let currentStatus: Map<string, CanonicalStatusEntry>;
-  try {
-    executor = indexDiffEntries(executorDiff);
-    baselineDiff = indexDiffEntries(baseline.diff);
-    currentDiff = indexDiffEntries(current.diff);
-    baselineStatus = indexStatusEntries(baseline.status);
-    currentStatus = indexStatusEntries(current.status);
-  } catch (error) {
-    return { ok: false, code: "attribution-incomplete", detail: error instanceof Error ? error.message : "duplicate workspace diff path" };
-  }
-  for (const [path, finalEntry] of currentStatus) {
-    const baselineEntry = baselineStatus.get(path);
-    if (baselineEntry && sameStatusEntry(baselineEntry, finalEntry)) continue;
-    const attributed = executor.get(path);
-    if (!attributed || attributed.status !== finalEntry.status) return { ok: false, code: "unattributed-change", detail: `Final status change to ${path} is not explained by the Executor Session diff.` };
-  }
-  for (const path of baselineStatus.keys()) {
-    if (currentStatus.has(path)) continue;
-    const attributed = executor.get(path);
-    if (!attributed || attributed.status !== "deleted") return { ok: false, code: "unattributed-change", detail: `Removal of status entry ${path} is not explained by the Executor Session diff.` };
-  }
-  for (const [path, finalEntry] of currentDiff) {
-    const baselineEntry = baselineDiff.get(path);
-    if (baselineEntry && sameDiffEntry(baselineEntry, finalEntry)) continue;
-    const attributed = executor.get(path);
-    if (!attributed || !sameDiffEntry(attributed, finalEntry)) return { ok: false, code: "unattributed-change", detail: `Final change to ${path} is not explained by the Executor Session diff.` };
-  }
-  for (const path of baselineDiff.keys()) {
-    if (currentDiff.has(path)) continue;
-    const attributed = executor.get(path);
-    if (!attributed || attributed.status !== "deleted") return { ok: false, code: "unattributed-change", detail: `Removal of ${path} is not explained by the Executor Session diff.` };
-  }
-  const baselineUntracked = new Map(baseline.untracked.map((entry) => [entry.path, entry.contentHash]));
-  const currentUntracked = new Map(current.untracked.map((entry) => [entry.path, entry.contentHash]));
-  for (const [path, contentHash] of currentUntracked) {
-    if (baselineUntracked.get(path) === contentHash) continue;
-    const attributed = executor.get(path);
-    if (!attributed || attributed.status !== "added" || addedPatchContentHash(attributed.patch) !== contentHash) return { ok: false, code: "attribution-incomplete", detail: `Untracked file ${path} is not attributed to the Executor Session.` };
-  }
-  for (const path of baselineUntracked.keys()) {
-    if (currentUntracked.has(path)) continue;
-    const attributed = executor.get(path);
-    if (!attributed || attributed.status !== "deleted") return { ok: false, code: "attribution-incomplete", detail: `Removed untracked file ${path} is not attributed to the Executor Session.` };
-  }
-  return { ok: true };
-}
-
-export function addedPatchContentHash(patch: string | undefined): string | undefined {
-  if (patch === undefined) return undefined;
-  const lines = patch.split(/\r?\n/);
-  const added = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
-  if (added.length === 0) return undefined;
-  const content = added.map((line) => line.slice(1)).join("\n") + (patch.includes("\\ No newline at end of file") ? "" : "\n");
-  return createHash("sha256").update(content, "utf8").digest("hex");
-}
-
-function indexStatusEntries(entries: readonly CanonicalStatusEntry[]): Map<string, CanonicalStatusEntry> {
-  const result = new Map<string, CanonicalStatusEntry>();
-  for (const entry of entries) {
-    if (result.has(entry.path)) throw new TypeError(`duplicate status path ${entry.path}`);
-    result.set(entry.path, entry);
-  }
-  return result;
-}
-
-function sameStatusEntry(left: CanonicalStatusEntry, right: CanonicalStatusEntry): boolean {
-  return left.path === right.path && left.status === right.status && left.additions === right.additions && left.deletions === right.deletions;
 }

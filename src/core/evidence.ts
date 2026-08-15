@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { AcceptanceCriterionSchema, type AcceptanceCriterion } from "./contract.js";
-import { DEFAULT_MAX_VERIFICATION_ATTEMPTS } from "./state.js";
 
 export const EvidenceSchema = z.object({
   criterionId: z.string().min(1).max(200),
@@ -40,20 +39,18 @@ export const VerificationEvidenceReferenceSchema = z.object({
 export type VerificationEvidenceReference = z.infer<typeof VerificationEvidenceReferenceSchema>;
 
 export type VerificationDerivation =
-  | { readonly ok: true; readonly outcome: "COMPLETED" | "ACTIVE" | "BLOCKED"; readonly findings: readonly VerificationFinding[]; readonly missingMustCriterionIds: readonly string[] }
+  | { readonly ok: true; readonly outcome: "COMPLETED" | "EXECUTING" | "BLOCKED"; readonly findings: readonly VerificationFinding[]; readonly missingMustCriterionIds: readonly string[] }
   | { readonly ok: false; readonly error: "invalid-input" | "duplicate-finding" | "unknown-criterion" | "unknown-evidence" | "evidence-criterion-mismatch" | "passing-must-needs-evidence" };
 
 export function deriveVerificationOutcome(
   criteriaValue: readonly AcceptanceCriterion[],
   evidenceValue: readonly VerificationEvidenceReference[],
   findingsValue: readonly VerificationFinding[],
-  attempt: number,
-  automaticAttemptLimit = DEFAULT_MAX_VERIFICATION_ATTEMPTS,
 ): VerificationDerivation {
   const criteriaResult = z.array(AcceptanceCriterionSchema).safeParse(criteriaValue);
   const evidenceResult = z.array(VerificationEvidenceReferenceSchema).safeParse(evidenceValue);
   const findingsResult = z.array(VerificationFindingSchema).safeParse(findingsValue);
-  if (!criteriaResult.success || !evidenceResult.success || !findingsResult.success || !Number.isInteger(attempt) || attempt < 1 || !Number.isInteger(automaticAttemptLimit) || automaticAttemptLimit < 1) return { ok: false, error: "invalid-input" };
+  if (!criteriaResult.success || !evidenceResult.success || !findingsResult.success) return { ok: false, error: "invalid-input" };
 
   const criteria = criteriaResult.data;
   const evidence = new Map(evidenceResult.data.map((item) => [item.evidenceId, item]));
@@ -81,7 +78,7 @@ export function deriveVerificationOutcome(
   }
 
   const mustFindings = normalized.filter((finding) => knownCriteria.get(finding.criterionId)?.priority === "must");
-  if (mustFindings.some((finding) => finding.result === "blocked")) return { ok: true, outcome: attempt >= automaticAttemptLimit ? "BLOCKED" : "ACTIVE", findings: normalized, missingMustCriterionIds };
-  if (mustFindings.some((finding) => finding.result === "fail")) return { ok: true, outcome: attempt >= automaticAttemptLimit ? "BLOCKED" : "ACTIVE", findings: normalized, missingMustCriterionIds };
+  if (mustFindings.some((finding) => finding.result === "blocked")) return { ok: true, outcome: "BLOCKED", findings: normalized, missingMustCriterionIds };
+  if (mustFindings.some((finding) => finding.result === "fail")) return { ok: true, outcome: "EXECUTING", findings: normalized, missingMustCriterionIds };
   return { ok: true, outcome: "COMPLETED", findings: normalized, missingMustCriterionIds };
 }

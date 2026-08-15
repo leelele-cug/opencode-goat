@@ -20,6 +20,7 @@ export type SessionIdentity = {
 };
 
 export type SessionPermissionRule = { permission: string; pattern: string; action: "allow" | "deny" | "ask" };
+export type SessionExecutionStatus = "idle" | "busy" | "retry" | "missing" | "unknown";
 
 export function openCodeMessageId(id: string): string {
   return id.startsWith("msg_") ? id : `msg_${id}`;
@@ -55,11 +56,9 @@ export interface SessionPort {
   create(input: SessionCreateInput): Promise<SessionIdentity>;
   children(id: string, directory: string): Promise<SessionIdentity[]>;
   promptAsync(id: string, body: { messageID?: string; agent?: string; model?: { providerID: string; modelID: string }; variant?: string; parts: unknown[]; directory: string }): Promise<void>;
-  diff(id: string, directory: string, messageID?: string): Promise<unknown>;
-  history?(id: string, directory: string): Promise<unknown[]>;
   message(id: string, messageId: string, directory: string): Promise<unknown>;
+  status(id: string, directory: string): Promise<SessionExecutionStatus>;
   interrupt(id: string, directory: string): Promise<void>;
-  status(id: string, directory: string): Promise<"idle" | "busy" | "unknown">;
 }
 
 export interface WorkspacePort {

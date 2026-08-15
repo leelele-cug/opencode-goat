@@ -1,58 +1,66 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="500" viewBox="0 0 1400 500" role="img" aria-labelledby="title desc">
-  <title id="title">Goat contract-driven Goal workflow</title>
-  <desc id="desc">A Goal becomes an exact Contract, passes a human approval gate, executes in an approved worktree, and is independently verified. Passing completes the Goal; failing returns it to execution.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="340" viewBox="0 0 1400 340" role="img" aria-labelledby="title desc">
+  <title id="title">Goat Goal workflow</title>
+  <desc id="desc">A Goal becomes a plan and waits for approval. Goat then creates an isolated Git worktree where execution, verification, and up to ten correction rounds occur. Passing verification completes the Goal.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#71807D"/></marker>
     <marker id="arrow-pass" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#B7EF4A"/></marker>
   </defs>
-  <rect width="1400" height="500" fill="#172329"/>
-  <g transform="translate(58 46) scale(.75)">
-    <path d="M48 20c-4-5-10-8-17-8-11 0-19 8-19 20s8 20 19 20c7 0 13-3 17-8V32H35" fill="none" stroke="#F4EFE4" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M22 34l7 7 16-18" fill="none" stroke="#B7EF4A" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="1400" height="340" fill="#172329"/>
+  <g id="header">
+    <g transform="translate(58 46) scale(.75)">
+      <path d="M48 20c-4-5-10-8-17-8-11 0-19 8-19 20s8 20 19 20c7 0 13-3 17-8V32H35" fill="none" stroke="#F4EFE4" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M22 34l7 7 16-18" fill="none" stroke="#B7EF4A" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="118" y="75" fill="#F4EFE4" font-family="Arial,Helvetica,sans-serif" font-size="27" font-weight="700">Goal workflow</text>
+    <text x="118" y="104" fill="#98A6A3" font-family="Arial,Helvetica,sans-serif" font-size="15">Approval comes before worktree changes. Verification decides completion.</text>
   </g>
-  <text x="118" y="75" fill="#F4EFE4" font-family="Arial,Helvetica,sans-serif" font-size="27" font-weight="700">Contract-driven Goal workflow</text>
-  <text x="118" y="104" fill="#98A6A3" font-family="Arial,Helvetica,sans-serif" font-size="15">No workspace write before approval. No completion before independent verification.</text>
-  <g fill="none" stroke="#71807D" stroke-width="3" marker-end="url(#arrow)">
-    <path d="M126 218H304"/>
-    <path d="M346 218H524"/>
-    <path d="M566 218H744"/>
-    <path d="M786 218H964"/>
+  <g id="worktree-context">
+    <rect x="725" y="139" width="430" height="166" rx="24" fill="#1C2A30" stroke="#43514F" stroke-width="1.5"/>
+    <text x="940" y="129" fill="#98A6A3" font-family="Arial,Helvetica,sans-serif" font-size="13" text-anchor="middle">Isolated Git worktree - created after approval</text>
   </g>
-  <path d="M1006 218H1184" fill="none" stroke="#B7EF4A" stroke-width="3" marker-end="url(#arrow-pass)"/>
-  <path d="M1000 232C1048 276 1042 410 930 410H860C813 410 810 336 835 298L791 234" fill="none" stroke="#71807D" stroke-width="2.5" stroke-dasharray="7 9" marker-end="url(#arrow)"/>
-  <g font-family="Arial,Helvetica,sans-serif" text-anchor="middle">
+  <g id="main-flow" fill="none" stroke="#71807D" stroke-width="3" marker-end="url(#arrow)">
+    <path d="M111 218H309"/>
+    <path d="M351 218H549"/>
+    <path d="M591 218H789"/>
+    <path d="M831 218 C875 188 985 188 1029 218"/>
+  </g>
+  <path id="pass-flow" d="M1071 218H1269" fill="none" stroke="#B7EF4A" stroke-width="3" marker-end="url(#arrow-pass)"/>
+  <path id="feedback-loop" d="M1029 218 C985 248 875 248 831 218" fill="none" stroke="#71807D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".75" marker-end="url(#arrow)"/>
+  <g id="workflow-nodes">
+    <circle cx="90" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+    <circle cx="330" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+    <circle cx="570" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+    <circle cx="810" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+    <circle cx="1050" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
+    <circle cx="1290" cy="218" r="20" fill="#B7EF4A"/>
+    <path d="M1281 218l6 6 12-14" fill="none" stroke="#172329" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="workflow-labels" font-family="Arial,Helvetica,sans-serif" text-anchor="middle">
     <g>
-      <circle cx="105" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
-      <text x="105" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Goal</text>
-      <text x="105" y="303" fill="#98A6A3" font-size="14">source intent</text>
+      <text x="90" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Goal</text>
+      <text x="90" y="190" fill="#98A6A3" font-size="14">desired outcome</text>
     </g>
     <g>
-      <circle cx="325" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
-      <text x="325" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Contract</text>
-      <text x="325" y="303" fill="#98A6A3" font-size="14">exact revision</text>
+      <text x="330" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Plan</text>
+      <text x="330" y="190" fill="#98A6A3" font-size="14">scope and checks</text>
     </g>
     <g>
-      <circle cx="545" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
-      <text x="545" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Approve</text>
-      <text x="545" y="303" fill="#98A6A3" font-size="14">human gate</text>
+      <text x="570" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Approve</text>
+      <text x="570" y="190" fill="#98A6A3" font-size="14">user gate</text>
     </g>
     <g>
-      <circle cx="765" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
-      <text x="765" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Execute</text>
-      <text x="765" y="303" fill="#98A6A3" font-size="14">approved worktree</text>
+      <text x="810" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Execute</text>
+      <text x="810" y="190" fill="#98A6A3" font-size="14">make changes</text>
     </g>
     <g>
-      <circle cx="985" cy="218" r="20" fill="#172329" stroke="#71807D" stroke-width="3"/>
-      <text x="985" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Verify</text>
-      <text x="985" y="303" fill="#98A6A3" font-size="14">independent check</text>
+      <text x="1050" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Verify</text>
+      <text x="1050" y="190" fill="#98A6A3" font-size="14">criteria and evidence</text>
     </g>
     <g>
-      <circle cx="1205" cy="218" r="20" fill="#B7EF4A"/>
-      <path d="M1196 218l6 6 12-14" fill="none" stroke="#172329" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="1205" y="276" fill="#F4EFE4" font-size="22" font-weight="700">Complete</text>
-      <text x="1205" y="303" fill="#98A6A3" font-size="14">all MUST pass</text>
+      <text x="1290" y="169" fill="#F4EFE4" font-size="22" font-weight="700">Done</text>
+      <text x="1290" y="190" fill="#98A6A3" font-size="14">verification passed</text>
     </g>
-    <text x="1095" y="198" fill="#B7EF4A" font-family="Arial,Helvetica,sans-serif" font-size="13">Pass</text>
-    <text x="895" y="443" fill="#98A6A3" font-family="Arial,Helvetica,sans-serif" font-size="13">Fail: correct in worktree</text>
+    <text x="1170" y="249" fill="#B7EF4A" font-size="13">Pass</text>
+    <text x="930" y="275" fill="#98A6A3" font-size="13">Fail: correct and verify again (up to 10 rounds)</text>
   </g>
 </svg>

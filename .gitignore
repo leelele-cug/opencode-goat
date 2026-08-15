@@ -1,7 +1,8 @@
 node_modules/
 dist/
 coverage/
-docs/
+docs/*
+!docs/goat-design.md
 *.tgz
 *.db
 *.db-shm

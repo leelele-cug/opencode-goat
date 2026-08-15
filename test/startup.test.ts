@@ -16,10 +16,9 @@ const sessionStub: SessionPort = {
   create: async (input) => ({ id: "child", title: input.title ?? null, projectID: "project-1", workspaceID: null, parentID: input.parentID ?? null, directory: input.directory, agent: input.agent ?? null, model: input.model ?? null, metadata: input.metadata ?? null }),
   children: async () => [],
   promptAsync: async () => undefined,
-  diff: async () => [],
   message: async () => undefined,
-  interrupt: async () => undefined,
   status: async () => "idle",
+  interrupt: async () => undefined,
 };
 
 const workspaceStub: WorkspacePort = {

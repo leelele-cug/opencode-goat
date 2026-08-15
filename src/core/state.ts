@@ -1,86 +1,92 @@
 import { z } from "zod";
 
-export const GoalStateSchema = z.enum([
-  "FORMING",
+export const WorkflowStateSchema = z.enum([
+  "PLANNING",
   "AWAITING_APPROVAL",
-  "ACTIVE",
+  "PREPARING",
+  "EXECUTING",
+  "FINALIZING_EXECUTION",
   "VERIFYING",
+  "FINALIZING_VERIFICATION",
   "PAUSED",
   "BLOCKED",
   "COMPLETED",
   "CANCELLED",
 ]);
-export type GoalState = z.infer<typeof GoalStateSchema>;
+export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
 
-export const TERMINAL_STATES: ReadonlySet<GoalState> = new Set(["COMPLETED", "CANCELLED"]);
-export const NON_TERMINAL_STATES: ReadonlySet<GoalState> = new Set([
-  "FORMING",
+export const TERMINAL_STATES: ReadonlySet<WorkflowState> = new Set(["COMPLETED", "CANCELLED"]);
+export const NON_TERMINAL_STATES: ReadonlySet<WorkflowState> = new Set([
+  "PLANNING",
   "AWAITING_APPROVAL",
-  "ACTIVE",
+  "PREPARING",
+  "EXECUTING",
+  "FINALIZING_EXECUTION",
   "VERIFYING",
+  "FINALIZING_VERIFICATION",
   "PAUSED",
   "BLOCKED",
 ]);
 
 export const DEFAULT_MAX_VERIFICATION_ATTEMPTS = 10;
 
-export function isTerminal(state: GoalState): boolean {
+const LEGAL_TRANSITIONS: ReadonlyMap<WorkflowState, ReadonlySet<WorkflowState>> = new Map([
+  ["PLANNING", new Set(["AWAITING_APPROVAL", "CANCELLED"])],
+  ["AWAITING_APPROVAL", new Set(["PREPARING", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["PREPARING", new Set(["EXECUTING", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["EXECUTING", new Set(["FINALIZING_EXECUTION", "PAUSED", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["FINALIZING_EXECUTION", new Set(["VERIFYING", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["VERIFYING", new Set(["FINALIZING_VERIFICATION", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["FINALIZING_VERIFICATION", new Set(["EXECUTING", "COMPLETED", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["PAUSED", new Set(["EXECUTING", "BLOCKED", "PLANNING", "CANCELLED"])],
+  ["BLOCKED", new Set(["AWAITING_APPROVAL", "PREPARING", "EXECUTING", "FINALIZING_EXECUTION", "VERIFYING", "FINALIZING_VERIFICATION", "PLANNING", "CANCELLED"])],
+  ["COMPLETED", new Set()],
+  ["CANCELLED", new Set()],
+]);
+
+export function isTerminal(state: WorkflowState): boolean {
   return TERMINAL_STATES.has(state);
 }
 
-export function isNonTerminal(state: GoalState): boolean {
+export function isNonTerminal(state: WorkflowState): boolean {
   return NON_TERMINAL_STATES.has(state);
 }
 
-const LEGAL_TRANSITIONS: ReadonlyMap<GoalState, ReadonlySet<GoalState>> = new Map([
-  ["FORMING", new Set(["AWAITING_APPROVAL", "CANCELLED"])],
-  ["AWAITING_APPROVAL", new Set(["ACTIVE", "FORMING", "BLOCKED", "CANCELLED"])],
-  ["ACTIVE", new Set(["VERIFYING", "FORMING", "PAUSED", "BLOCKED", "CANCELLED"])],
-  ["VERIFYING", new Set(["COMPLETED", "ACTIVE", "FORMING", "BLOCKED", "CANCELLED"])],
-  ["PAUSED", new Set(["ACTIVE", "FORMING", "BLOCKED", "CANCELLED"])],
-  ["BLOCKED", new Set(["AWAITING_APPROVAL", "ACTIVE", "FORMING", "CANCELLED"])],
-  ["COMPLETED", new Set()],
-  ["CANCELLED", new Set()],
-]);
-
-export function canTransition(from: GoalState, to: GoalState): boolean {
+export function canTransition(from: WorkflowState, to: WorkflowState): boolean {
   return LEGAL_TRANSITIONS.get(from)?.has(to) ?? false;
 }
 
-export function assertTransition(from: GoalState, to: GoalState): void {
-  if (!canTransition(from, to)) throw new TypeError(`Illegal Goal transition: ${from} -> ${to}`);
+export function assertTransition(from: WorkflowState, to: WorkflowState): void {
+  if (!canTransition(from, to)) throw new TypeError(`Illegal workflow transition: ${from} -> ${to}`);
 }
 
-export const RunStatusSchema = z.enum([
-  "PREPARING",
-  "ACTIVE",
-  "FINALIZING",
-  "VERIFYING",
-  "PAUSED",
-  "BLOCKED",
-  "COMPLETED",
-  "CANCELLED",
-]);
-export type RunStatus = z.infer<typeof RunStatusSchema>;
+export type WorkflowOwner = "formulator" | "executor" | "verifier" | "orchestrator" | "user" | "none";
 
-export const ACTIVE_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(["PREPARING", "ACTIVE", "FINALIZING", "VERIFYING", "PAUSED", "BLOCKED"]);
-export const RUN_TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["COMPLETED", "CANCELLED"]);
-
-const LEGAL_RUN_TRANSITIONS: ReadonlyMap<RunStatus, ReadonlySet<RunStatus>> = new Map([
-  ["PREPARING", new Set(["ACTIVE", "BLOCKED", "CANCELLED"])],
-  ["ACTIVE", new Set(["FINALIZING", "PAUSED", "BLOCKED", "CANCELLED"])],
-  ["FINALIZING", new Set(["VERIFYING", "BLOCKED", "CANCELLED"])],
-  ["VERIFYING", new Set(["COMPLETED", "ACTIVE", "BLOCKED", "CANCELLED"])],
-  ["PAUSED", new Set(["ACTIVE", "BLOCKED", "CANCELLED"])],
-  ["BLOCKED", new Set(["ACTIVE", "CANCELLED"])],
-  ["COMPLETED", new Set()],
-  ["CANCELLED", new Set()],
-]);
-
-export function canTransitionRun(from: RunStatus, to: RunStatus): boolean {
-  return LEGAL_RUN_TRANSITIONS.get(from)?.has(to) ?? false;
+export function ownerForState(state: WorkflowState): WorkflowOwner {
+  switch (state) {
+    case "PLANNING": return "formulator";
+    case "EXECUTING": return "executor";
+    case "VERIFYING": return "verifier";
+    case "PREPARING":
+    case "FINALIZING_EXECUTION":
+    case "FINALIZING_VERIFICATION": return "orchestrator";
+    case "AWAITING_APPROVAL":
+    case "PAUSED":
+    case "BLOCKED": return "user";
+    default: return "none";
+  }
 }
 
-export function assertTransitionRun(from: RunStatus, to: RunStatus): void {
-  if (!canTransitionRun(from, to)) throw new TypeError(`Illegal Run transition: ${from} -> ${to}`);
+export function displayStage(state: WorkflowState): string {
+  switch (state) {
+    case "PLANNING": return "Plan";
+    case "AWAITING_APPROVAL": return "Approve";
+    case "PREPARING":
+    case "EXECUTING":
+    case "FINALIZING_EXECUTION": return "Execute";
+    case "VERIFYING":
+    case "FINALIZING_VERIFICATION": return "Verify";
+    case "COMPLETED": return "Done";
+    default: return state.charAt(0) + state.slice(1).toLowerCase();
+  }
 }

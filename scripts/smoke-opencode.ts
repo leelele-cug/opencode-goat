@@ -51,24 +51,15 @@ type SmokeCase = {
   readonly intent: string;
   readonly file: string;
   readonly content: string;
-  readonly workspace: "current" | "worktree";
 };
 type SmokeWorktree = string | { name?: string; directory?: string };
 
 const cases: readonly SmokeCase[] = [
   {
-    name: "current",
-    intent: "SMOKE ACTION: call goat_state now. Then call goat_contract_propose immediately. Do not reply with prose. Do not use generic tools or create files. Contract: Executor adds smoke-current.txt in the current workspace with exact content CURRENT_SMOKE_OK plus one LF newline. Define exactly one MUST criterion for that file, verified by one inspection step reading the file. No other criteria or questions; use only the exact approval Question returned by the contract tool.",
-    file: "smoke-current.txt",
-    content: "CURRENT_SMOKE_OK\n",
-    workspace: "current",
-  },
-  {
     name: "worktree",
     intent: "SMOKE ACTION: call goat_state now. Then call goat_contract_propose immediately. Do not reply with prose. Do not use generic tools or create files. Contract: use the native isolated Git worktree already prepared by Goat, not the current workspace. Executor adds smoke-worktree.txt there with exact content WORKTREE_SMOKE_OK plus one LF newline. Define exactly one MUST criterion for that file, verified by one inspection step reading the file. No other criteria or questions; use only the exact approval Question returned by the contract tool.",
     file: "smoke-worktree.txt",
     content: "WORKTREE_SMOKE_OK\n",
-    workspace: "worktree",
   },
 ];
 
@@ -226,11 +217,11 @@ async function waitForCompletion(client: OpencodeClient, directory: string, root
     const snapshot = goatWorkflowSnapshot(goatHome, rootSessionID);
     failOnUnexpectedWorkflow(snapshot);
     if (workflowCompleted(snapshot)) break;
-    if (!formulatorRetried && snapshot?.goalState === "FORMING" && await sessionIsIdle(client, rootSessionID, directory)) {
+    if (!formulatorRetried && snapshot?.goalState === "PLANNING" && await sessionIsIdle(client, rootSessionID, directory)) {
       formulatorRetried = true;
       await continueSession(client, rootSessionID, directory, "goat-formulator", "Continue Goat formulation now. Call goat_state, then call goat_contract_propose. Do not reply in prose.", deadline);
     }
-    if (!executorRetried && snapshot?.runStatus === "ACTIVE") {
+    if (!executorRetried && snapshot?.goalState === "EXECUTING") {
       const executor = snapshot.dispatches.find((dispatch) => dispatch.role === "executor" && ["SENT", "STARTED"].includes(dispatch.status ?? ""));
       if (executor?.targetSessionId && await sessionIsIdle(client, executor.targetSessionId, snapshot.workspacePath ?? directory)) {
         executorRetried = true;
@@ -259,16 +250,16 @@ async function waitForCompletion(client: OpencodeClient, directory: string, root
   throw new Error(`Goat workflow did not reach COMPLETED before the smoke deadline\n${recent.join("\n")}`);
 }
 
-type WorkflowSnapshot = { goalState: string | undefined; blocker: string | undefined; runStatus: string | undefined; workspacePath: string | undefined; verificationAttempts: number | undefined; verificationOutcome: string | undefined; dispatches: { kind?: string; role?: string; status?: string; failureReason?: string; targetSessionId?: string }[]; lease: unknown };
+type WorkflowSnapshot = { goalState: string | undefined; blocker: string | undefined; runEndReason: string | undefined; workspacePath: string | undefined; verificationAttempts: number | undefined; verificationOutcome: string | undefined; dispatches: { kind?: string; role?: string; status?: string; failureReason?: string; targetSessionId?: string }[]; lease: unknown };
 
 function workflowCompleted(snapshot: WorkflowSnapshot | null): boolean {
-  return snapshot?.goalState === "COMPLETED" && snapshot.runStatus === "COMPLETED" && snapshot.verificationOutcome === "PASS";
+  return snapshot?.goalState === "COMPLETED" && snapshot.runEndReason === "COMPLETED" && snapshot.verificationOutcome === "PASS";
 }
 
 function failOnUnexpectedWorkflow(snapshot: WorkflowSnapshot | null): void {
   const hasFailedDispatch = !!snapshot && snapshot.dispatches.some((dispatch) => dispatch.status === "FAILED") && !snapshot.dispatches.some((dispatch) => ["PENDING", "SENT", "STARTED"].includes(dispatch.status ?? ""));
   const hasRemediation = snapshot?.dispatches.some((dispatch) => dispatch.kind === "executor-remediation") ?? false;
-  if (snapshot?.goalState === "BLOCKED" || snapshot?.runStatus === "BLOCKED" || hasFailedDispatch || hasRemediation) {
+  if (snapshot?.goalState === "BLOCKED" || hasFailedDispatch || hasRemediation) {
     throw new Error(`Goat workflow entered an unexpected smoke state: ${safeString(snapshot)}`);
   }
 }
@@ -277,12 +268,12 @@ function goatWorkflowSnapshot(goatHome: string, rootSessionID: string): Workflow
   try {
     const db = new Database(join(goatHome, "goat.db"), { readonly: true });
     const goal = (db.query("SELECT goal_id,state,blocker FROM goals WHERE root_session_id=? ORDER BY rowid DESC LIMIT 1").all(rootSessionID)[0] ?? null) as { goal_id?: string; state?: string; blocker?: string } | null;
-    const run = goal?.goal_id ? ((db.query("SELECT run_id,status,workspace_path,verification_attempts FROM runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1").all(goal.goal_id)[0] ?? null) as { run_id?: string; status?: string; workspace_path?: string; verification_attempts?: number } | null) : null;
+    const run = goal?.goal_id ? ((db.query("SELECT run_id,end_reason,workspace_path,verification_attempts FROM runs WHERE goal_id=? ORDER BY rowid DESC LIMIT 1").all(goal.goal_id)[0] ?? null) as { run_id?: string; end_reason?: string; workspace_path?: string; verification_attempts?: number } | null) : null;
     const verification = run?.run_id ? ((db.query("SELECT outcome FROM verification_results WHERE run_id=? ORDER BY attempt DESC LIMIT 1").all(run.run_id)[0] ?? null) as { outcome?: string } | null) : null;
     const dispatches = goal?.goal_id ? db.query("SELECT kind,role,status,failure_reason AS failureReason,target_session_id AS targetSessionId FROM dispatches WHERE goal_id=? ORDER BY created_at").all(goal.goal_id) as { kind?: string; role?: string; status?: string; failureReason?: string; targetSessionId?: string }[] : [];
     const lease = goal?.goal_id ? db.query("SELECT holder_instance_id AS holderInstanceId,expires_at AS expiresAt FROM leases WHERE goal_id=?").all(goal.goal_id)[0] : undefined;
     db.close();
-    return { goalState: goal?.state, blocker: goal?.blocker, runStatus: run?.status, workspacePath: run?.workspace_path, verificationAttempts: run?.verification_attempts, verificationOutcome: verification?.outcome, dispatches, lease };
+    return { goalState: goal?.state, blocker: goal?.blocker, runEndReason: run?.end_reason, workspacePath: run?.workspace_path, verificationAttempts: run?.verification_attempts, verificationOutcome: verification?.outcome, dispatches, lease };
   } catch { return null; }
 }
 
@@ -299,14 +290,7 @@ async function runCase(client: OpencodeClient, project: string, goatHome: string
    if (!workflowCompleted(completed) || completed?.verificationAttempts !== 1) throw new Error(`smoke ${smokeCase.name} did not complete on verification attempt one`);
    timings.set(`${smokeCase.name}/total`, Date.now() - caseStarted);
 
-  if (smokeCase.workspace === "current") {
-    const content = await readFile(join(project, smokeCase.file), "utf8");
-    if (content !== smokeCase.content) throw new Error(`current workspace file ${smokeCase.file} has unexpected content`);
-    await rm(join(project, smokeCase.file), { force: true });
-    return;
-  }
-
-  const after = unwrap<SmokeWorktree[]>(await withTimeout("worktree list after completion", client.worktree.list({ directory: project })));
+   const after = unwrap<SmokeWorktree[]>(await withTimeout("worktree list after completion", client.worktree.list({ directory: project })));
   const created = after.filter((entry) => !before.some((item) => worktreeDirectory(item).toLowerCase() === worktreeDirectory(entry).toLowerCase()));
   if (created.length !== 1) throw new Error(`expected one new native worktree, found ${created.length}`);
   const createdDirectory = worktreeDirectory(created[0]!);
@@ -393,13 +377,13 @@ async function main(): Promise<void> {
       }
       passed = true;
       process.stdout.write(`smoke timings: ${safeString(Object.fromEntries(timings))}\n`);
-     process.stdout.write(`${process.env.OPENCODE_SERVER_PASSWORD ? "authenticated " : ""}OpenCode current/worktree smoke passed\n`);
+      process.stdout.write(`${process.env.OPENCODE_SERVER_PASSWORD ? "authenticated " : ""}OpenCode isolated-worktree smoke passed\n`);
    } catch (error) {
      process.stderr.write(`smoke timings: ${safeString(Object.fromEntries(timings))}\n`);
      try {
       const db = new Database(join(goatHome, "goat.db"), { readonly: true });
       const goals = db.query("SELECT goal_id,state,blocker FROM goals ORDER BY created_at").all();
-       const runs = db.query("SELECT run_id,status,workspace_path,preparation_retry_requested,executor_diff_json,final_snapshot_json FROM runs ORDER BY created_at").all();
+        const runs = db.query("SELECT run_id,end_reason,worktree_name,workspace_path,corrections_in_batch,verification_snapshot_json FROM runs ORDER BY created_at").all();
        const dispatches = db.query("SELECT kind,role,status,failure_reason,target_session_id FROM dispatches ORDER BY created_at").all();
        const leases = db.query("SELECT goal_id,holder_instance_id,expires_at FROM leases ORDER BY goal_id").all();
        const bindings = db.query("SELECT session_id,goal_id,run_id,role,status FROM session_bindings ORDER BY created_at").all();

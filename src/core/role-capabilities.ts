@@ -1,4 +1,4 @@
-import type { GoalState } from "./state.js";
+import type { WorkflowState } from "./state.js";
 import type { SessionPermissionRule } from "./ports.js";
 
 export const GOAT_AGENT_IDS = ["goat-formulator", "goat-executor", "goat-verifier"] as const;
@@ -91,12 +91,12 @@ export function isRegisteredGoatTool(toolId: string): toolId is RegisteredGoatTo
   return (REGISTERED_GOAT_TOOL_IDS as readonly string[]).includes(toolId);
 }
 
-const GOAT_TOOL_RULES: Readonly<Record<RegisteredGoatToolId, { readonly roles: readonly GoatRole[]; readonly states: readonly GoalState[]; readonly mutation: boolean }>> = {
-  goat_state: { roles: ["formulator", "executor", "verifier"], states: ["FORMING", "AWAITING_APPROVAL", "ACTIVE", "VERIFYING", "PAUSED", "BLOCKED"], mutation: false },
-  goat_contract_propose: { roles: ["formulator"], states: ["FORMING"], mutation: true },
-  goat_evidence_record: { roles: ["executor"], states: ["ACTIVE"], mutation: true },
-  goat_completion_propose: { roles: ["executor"], states: ["ACTIVE"], mutation: true },
-  goat_block: { roles: ["executor"], states: ["ACTIVE"], mutation: true },
+const GOAT_TOOL_RULES: Readonly<Record<RegisteredGoatToolId, { readonly roles: readonly GoatRole[]; readonly states: readonly WorkflowState[]; readonly mutation: boolean }>> = {
+  goat_state: { roles: ["formulator", "executor", "verifier"], states: ["PLANNING", "AWAITING_APPROVAL", "EXECUTING", "VERIFYING", "PAUSED", "BLOCKED"], mutation: false },
+  goat_contract_propose: { roles: ["formulator"], states: ["PLANNING"], mutation: true },
+  goat_evidence_record: { roles: ["executor"], states: ["EXECUTING"], mutation: true },
+  goat_completion_propose: { roles: ["executor"], states: ["EXECUTING"], mutation: true },
+  goat_block: { roles: ["executor"], states: ["EXECUTING"], mutation: true },
   goat_verifier_report: { roles: ["verifier"], states: ["VERIFYING"], mutation: true },
 };
 
@@ -104,7 +104,7 @@ export type GuardResult = { readonly allowed: true } | { readonly allowed: false
 
 export type GoatToolAccessContext = {
   readonly toolId: RegisteredGoatToolId;
-  readonly state: GoalState;
+  readonly state: WorkflowState;
   readonly role: GoatRole;
   readonly sessionBindingMatchesRole: boolean;
   readonly leaseOwned: boolean;
@@ -121,11 +121,12 @@ export function validateGoatToolAccess(context: GoatToolAccessContext): GuardRes
   return { allowed: true };
 }
 
-export function guardGenericTool(state: GoalState, role: GoatRole, toolId: string): GuardResult {
+export function guardGenericTool(state: WorkflowState, role: GoatRole, toolId: string): GuardResult {
   if (isRegisteredGoatTool(toolId)) return { allowed: false, reason: "Registered Goat tools require their role-bound internal validation." };
   const capability = ROLE_CAPABILITIES[role];
   if (!capability.genericTools.has(toolId)) return { allowed: false, reason: `${role} Session cannot call ${toolId}.` };
-  if (capability.writeTools.has(toolId) && state !== "ACTIVE") return { allowed: false, reason: `Writes are forbidden while Goal is ${state}.` };
+  if (role === "executor" && state !== "EXECUTING") return { allowed: false, reason: `Executor tools are forbidden while workflow is ${state}.` };
+  if (role === "verifier" && state !== "VERIFYING") return { allowed: false, reason: `Verifier tools are forbidden while workflow is ${state}.` };
   if (toolId === "question" && !capability.canUseNativeQuestion) return { allowed: false, reason: `${role} Sessions cannot ask native Questions.` };
   return { allowed: true };
 }

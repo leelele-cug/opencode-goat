@@ -3,7 +3,7 @@ import { OpencodeClient as V2OpencodeClient } from "@opencode-ai/sdk/v2";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { lstat } from "node:fs/promises";
-import type { NativeQuestionRequest, QuestionPort, SessionCreateInput, SessionIdentity, SessionModel, SessionPermissionRule, SessionPort, ToastPort, ToolRegistryPort, WorkspacePort } from "../core/ports.js";
+import type { NativeQuestionRequest, QuestionPort, SessionCreateInput, SessionExecutionStatus, SessionIdentity, SessionModel, SessionPermissionRule, SessionPort, ToastPort, ToolRegistryPort, WorkspacePort } from "../core/ports.js";
 import { buildSnapshot, canonicalizeDiff, canonicalizeStatus, MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_FILE_BYTES, normalizeWorkspacePath, type WorkspacePlatform } from "../core/workspace.js";
 
 type InjectedClient = PluginInput["client"];
@@ -38,11 +38,10 @@ export function createOpenCodeAdapters(input: Pick<PluginInput, "client" | "serv
     ["v2.session.create", v2.session.create],
     ["v2.session.children", v2.session.children],
     ["session.promptAsync", v2.session.promptAsync],
+    ["session.status", v2.session.status],
     ["v2.session.prompt", v2.v2.session.prompt],
     ["v2.session.interrupt", v2.v2.session.interrupt],
-    ["v2.session.status", v2.session.status],
     ["v2.session.message", v2.session.message],
-    ["v2.session.diff", v2.session.diff],
     ["v2.tool.ids", v2.tool.ids],
     ["v2.worktree.list", v2.worktree.list],
     ["v2.worktree.create", v2.worktree.create],
@@ -120,19 +119,21 @@ function createSessionAdapter(client: V2Client, _platform: WorkspacePlatform): S
       if (body.variant !== undefined) request.variant = body.variant;
       unwrap(await client.session.promptAsync(request as Parameters<typeof client.session.promptAsync>[0] as never));
     },
-    diff: async (id, directory, messageID) => {
-      const request: { sessionID: string; directory: string; messageID?: string } = { sessionID: id, directory };
-      if (messageID !== undefined) request.messageID = messageID;
-      return unwrap(await client.session.diff(request));
-    },
-    history: async (id, directory) => unwrap<unknown[]>(await client.session.messages({ sessionID: id, directory })),
     message: async (id, messageId, directory) => unwrap(await client.session.message({ sessionID: id, messageID: messageId, directory })),
-    interrupt: async (id) => { unwrap(await client.v2.session.interrupt({ sessionID: id })); },
-    status: async (id, directory) => {
-      const statuses = unwrap<Record<string, { type?: string }>>(await client.session.status({ directory }));
-      const type = statuses[id]?.type;
-      return type === "idle" ? "idle" : type ? "busy" : "unknown";
+    status: async (id, directory): Promise<SessionExecutionStatus> => {
+      try {
+        const statuses = unwrap<Record<string, { type?: string }>>(await client.session.status({ directory }));
+        const type = statuses[id]?.type;
+        if (type === "idle") return "idle";
+        if (type === "busy") return "busy";
+        if (type === "retry") return "retry";
+        return statuses[id] ? "unknown" : "missing";
+      } catch (error) {
+        if (/404|not found/i.test(error instanceof Error ? error.message : String(error))) return "missing";
+        return "unknown";
+      }
     },
+    interrupt: async (id) => { unwrap(await client.v2.session.interrupt({ sessionID: id })); },
   };
 }
 

@@ -28,7 +28,8 @@ export function createHooks(
         output.parts.push({ type: "text", text: "[Goat] Mutating commands require the originating root Session." } as never);
         return;
       }
-       const text = await executeGoatCommand(orchestrator, input.sessionID, input.arguments, origin);
+       const root = await session.get(input.sessionID, origin.projectDirectory);
+       const text = await executeGoatCommand(orchestrator, input.sessionID, input.arguments, { ...origin, rootWorkspaceId: root.workspaceID });
       output.parts.push({ type: "text", text } as never);
     },
     "tool.execute.before": async (input, output) => {

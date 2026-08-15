@@ -2,8 +2,6 @@ import { z } from "zod";
 import { canonicalHash, compareCanonicalStrings } from "./canonical.js";
 const ContractTextSchema = z.string().min(1).max(20_000);
 const ContractListSchema = z.array(ContractTextSchema).max(100);
-export const WorkspaceStrategySchema = z.enum(["current", "worktree"]);
-export type WorkspaceStrategy = z.infer<typeof WorkspaceStrategySchema>;
 
 export const ContractBodySchema = z.object({
   sourceRequest: z.string().min(1).max(50_000),
@@ -14,7 +12,6 @@ export const ContractBodySchema = z.object({
   }).strict(),
   constraints: ContractListSchema,
   assumptions: ContractListSchema,
-  workspace: WorkspaceStrategySchema,
 }).strict().readonly();
 export type ContractBody = z.infer<typeof ContractBodySchema>;
 
@@ -71,7 +68,7 @@ export function formatContractApprovalSummary(body: ContractBody, criteria: read
     `Excluded: ${body.scope.excluded.length ? body.scope.excluded.join("; ") : "None"}`,
     `Constraints: ${body.constraints.length ? body.constraints.join("; ") : "None"}`,
     `Criteria: ${criteria.map((criterion) => `${criterion.priority.toUpperCase()} ${criterion.id}: ${criterion.description} [${criterion.verification.map((step) => step.kind === "command" ? step.command : `inspect: ${step.description}`).join(" | ")}]`).join("; ")}`,
-    `Workspace: ${body.workspace}`,
+    "Execution: a new isolated Git worktree",
     `Assumptions: ${body.assumptions.length ? body.assumptions.join("; ") : "None"}`,
   ].join("\n");
 }
@@ -88,7 +85,6 @@ export const ReadyGateFactsSchema = z.object({
   constraintsReviewed: z.boolean(),
   assumptionsReviewed: z.boolean(),
   outcomeChangingQuestionsResolved: z.boolean(),
-  workspaceAvailable: z.boolean(),
   infeasibleCriterionIds: z.array(z.string().min(1).max(200)).max(200).readonly(),
 }).strict().readonly();
 export type ReadyGateFacts = z.infer<typeof ReadyGateFactsSchema>;
@@ -158,11 +154,5 @@ export function evaluateReadiness(body: ContractBody, criteria: readonly Accepta
     status: parsedFacts.outcomeChangingQuestionsResolved ? "pass" : "block",
     reason: parsedFacts.outcomeChangingQuestionsResolved ? undefined : "Outcome-changing questions remain unresolved",
   });
-  dimensions.push({
-    dimension: "workspace-available",
-    status: parsedFacts.workspaceAvailable ? "pass" : "block",
-    reason: parsedFacts.workspaceAvailable ? undefined : `Workspace strategy ${parsedBody.workspace} is unavailable`,
-  });
-
   return { ready: dimensions.every((dimension) => dimension.status === "pass"), dimensions };
 }

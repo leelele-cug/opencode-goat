@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 import { z } from "zod";
 import type { Orchestrator } from "../runtime/orchestrator.js";
-import { askNativePermission, operationKey, toolContext } from "./deps.js";
+import { authorizeThenAsk, operationKey } from "./deps.js";
 
 export function createContractProposeTool(orchestrator: Orchestrator): ToolDefinition {
   return tool({
@@ -12,7 +12,6 @@ export function createContractProposeTool(orchestrator: Orchestrator): ToolDefin
       excluded: z.array(z.string().min(1)),
       constraints: z.array(z.string().min(1)),
       assumptions: z.array(z.string().min(1)),
-      workspace: z.enum(["current", "worktree"]),
       criteria: z.array(z.object({
         id: z.string().min(1),
         priority: z.enum(["must", "should"]),
@@ -26,23 +25,20 @@ export function createContractProposeTool(orchestrator: Orchestrator): ToolDefin
       constraintsReviewed: z.boolean(),
       assumptionsReviewed: z.boolean(),
       outcomeChangingQuestionsResolved: z.boolean(),
-      workspaceAvailable: z.boolean(),
       infeasibleCriterionIds: z.array(z.string().min(1)),
     },
-    execute: async (args, context) => { await askNativePermission(context, "goat_contract_propose"); return orchestrator.proposeContract(toolContext(context, "goat_contract_propose"), {
+    execute: async (args, context) => orchestrator.proposeContract(await authorizeThenAsk(orchestrator, context, "goat_contract_propose"), {
       outcome: args.outcome,
       included: args.included,
       excluded: args.excluded,
       constraints: args.constraints,
       assumptions: args.assumptions,
-      workspace: args.workspace,
       criteria: args.criteria,
       outcomeObservable: args.outcomeObservable,
       constraintsReviewed: args.constraintsReviewed,
       assumptionsReviewed: args.assumptionsReviewed,
       outcomeChangingQuestionsResolved: args.outcomeChangingQuestionsResolved,
-      workspaceAvailable: args.workspaceAvailable,
       infeasibleCriterionIds: args.infeasibleCriterionIds,
-    }, operationKey("goat_contract_propose", context, "", args)); },
+    }, operationKey("goat_contract_propose", context, "", args)),
   });
 }
