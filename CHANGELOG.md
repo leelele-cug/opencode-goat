@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-alpha.4 - 2026-08-15
+## 0.1.0-alpha.5 - 2026-08-15
 
 - Clarified the supported setup: a clean source Git repository and an independent native Git worktree for every Goal.
 - Made the user workflow explicit: Goal -> Plan -> Approve -> Execute -> Verify -> Done.
@@ -21,6 +21,9 @@
 - Clarified that OpenCode permissions remain the final authority and that Goat is not an OS sandbox.
 - Added user guidance for protecting Goat's local data directory.
 - Documented private vulnerability reporting and mandatory release gates.
+- Aligned the authenticated release smoke with the bounded remediation loop so
+  a valid correction round is exercised instead of being treated as a harness
+  failure.
 
 ## 0.1.0-alpha.3 - 2026-08-14
 

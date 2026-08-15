@@ -258,8 +258,7 @@ function workflowCompleted(snapshot: WorkflowSnapshot | null): boolean {
 
 function failOnUnexpectedWorkflow(snapshot: WorkflowSnapshot | null): void {
   const hasFailedDispatch = !!snapshot && snapshot.dispatches.some((dispatch) => dispatch.status === "FAILED") && !snapshot.dispatches.some((dispatch) => ["PENDING", "SENT", "STARTED"].includes(dispatch.status ?? ""));
-  const hasRemediation = snapshot?.dispatches.some((dispatch) => dispatch.kind === "executor-remediation") ?? false;
-  if (snapshot?.goalState === "BLOCKED" || hasFailedDispatch || hasRemediation) {
+  if (snapshot?.goalState === "BLOCKED" || hasFailedDispatch) {
     throw new Error(`Goat workflow entered an unexpected smoke state: ${safeString(snapshot)}`);
   }
 }
@@ -287,7 +286,7 @@ async function runCase(client: OpencodeClient, project: string, goatHome: string
   void client.session.command({ sessionID: session.id, directory: project, command: "goat", arguments: smokeCase.intent, agent: "goat-formulator" }).then((result) => { try { unwrap(result); } catch (error) { commandError = error; } }, (error) => { commandError = error; });
    await waitForCompletion(client, project, session.id, goatHome, () => commandError, timings, smokeCase.name);
    const completed = goatWorkflowSnapshot(goatHome, session.id);
-   if (!workflowCompleted(completed) || completed?.verificationAttempts !== 1) throw new Error(`smoke ${smokeCase.name} did not complete on verification attempt one`);
+   if (!workflowCompleted(completed) || !completed?.verificationAttempts || completed.verificationAttempts > 11) throw new Error(`smoke ${smokeCase.name} did not complete within one verification batch`);
    timings.set(`${smokeCase.name}/total`, Date.now() - caseStarted);
 
    const after = unwrap<SmokeWorktree[]>(await withTimeout("worktree list after completion", client.worktree.list({ directory: project })));
